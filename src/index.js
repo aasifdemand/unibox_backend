@@ -9,6 +9,8 @@ import errorHandler from './middlewares/error.middleware.js';
 import { responseMiddleware } from './middlewares/response.middleware.js';
 import swaggerUi from "swagger-ui-express";
 import { swaggerSpec } from "./utils/swagger.js";
+import cookieParser from "cookie-parser";
+
 
 dotenv.config();
 
@@ -16,6 +18,7 @@ const app = express();
 
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
+app.use(cookieParser());
 
 try {
   await sequelize.authenticate();
@@ -40,4 +43,5 @@ app.use(errorHandler);
 
 app.listen(process.env.PORT, () => {
     console.log(`API server is running on port ${process.env.PORT}❤️‍🔥`);
+    console.log(`API docs available at http://localhost:${process.env.PORT}/api-docs 📝`)
 })

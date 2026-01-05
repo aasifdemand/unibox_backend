@@ -10,6 +10,7 @@ const router = express.Router();
  *   name: User
  *   description: User APIs
  */
+
 /**
  * @swagger
  * /api/v1/users/me:
@@ -17,7 +18,7 @@ const router = express.Router();
  *     summary: Get logged-in user profile
  *     tags: [User]
  *     security:
- *       - bearerAuth: []
+ *       - cookieAuth: []
  *     responses:
  *       200:
  *         description: User profile fetched successfully
@@ -33,7 +34,7 @@ const router = express.Router();
  *                 name: "Aasif Ali"
  *                 email: "aasif@example.com"
  *       401:
- *         description: Unauthorized (missing or invalid JWT)
+ *         description: Unauthorized (user not logged in)
  *         content:
  *           application/json:
  *             schema:
@@ -48,7 +49,7 @@ router.get("/me", protect, getProfile);
  *     summary: Update logged-in user profile (partial update)
  *     tags: [User]
  *     security:
- *       - bearerAuth: []
+ *       - cookieAuth: []
  *     requestBody:
  *       required: true
  *       content:
@@ -84,7 +85,7 @@ router.get("/me", protect, getProfile);
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  *       401:
- *         description: Unauthorized (missing or invalid JWT)
+ *         description: Unauthorized (user not logged in)
  *         content:
  *           application/json:
  *             schema:
@@ -97,7 +98,5 @@ router.get("/me", protect, getProfile);
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 router.patch("/profile", protect, updateProfile);
-
-
 
 export default router;

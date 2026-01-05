@@ -16,10 +16,10 @@ const options = {
     ],
     components: {
       securitySchemes: {
-        bearerAuth: {
-          type: "http",
-          scheme: "bearer",
-          bearerFormat: "JWT",
+        cookieAuth: {
+          type: "apiKey",
+          in: "cookie",
+          name: "access_token",
         },
       },
       schemas: {
@@ -40,12 +40,15 @@ const options = {
         },
       },
     },
+
+    // 🔐 OPTIONAL: apply cookie auth globally
     security: [
       {
-        bearerAuth: [],
+        cookieAuth: [],
       },
     ],
   },
+
   apis: ["./src/routes/*.js"],
 };
 

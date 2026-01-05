@@ -31,9 +31,15 @@ export const signup = asyncHandler(async (req, res) => {
 
   const token = genToken(newUser.id);
 
-  res.created({
+res.cookie("access_token", token, {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "strict",
+  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+});
+
+res.created({
   message: "Signup successful",
-  data: { token },
 });
 
 });
@@ -59,12 +65,31 @@ export const login = asyncHandler(async (req, res) => {
 
   const token = genToken(user.id);
 
-  res.ok({
-  message: "Login successful",
-  data: { token },
+ res.cookie("access_token", token, {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "strict",
+  maxAge: 7 * 24 * 60 * 60 * 1000,
 });
 
+res.ok({
+  message: "Login successful",
 });
+
+
+});
+
+
+export const logout = (req, res) => {
+  res.clearCookie("access_token", {
+    httpOnly: true,
+    sameSite: "strict",
+    secure: process.env.NODE_ENV === "production",
+  });
+
+  res.ok({ message: "Logged out successfully" });
+};
+
 
 
 export const forgotPassword = asyncHandler(async (req, res) => {
