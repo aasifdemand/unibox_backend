@@ -80,6 +80,22 @@ res.ok({
 });
 
 
+export const googleCallback = (req, res) => {
+  const user = req.user;
+
+  const token = genToken(user.id);
+
+  res.cookie("access_token", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+res.redirect("/profile.html");
+  // redirect back to frontend
+  // res.redirect("http://localhost:5173/dashboard");
+};
+
 export const logout = (req, res) => {
   res.clearCookie("access_token", {
     httpOnly: true,

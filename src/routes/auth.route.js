@@ -1,11 +1,13 @@
 import { Router } from "express";
 import {
   forgotPassword,
+  googleCallback,
   login,
   logout,
   resetPassword,
   signup,
 } from "../controllers/auth.controller.js";
+import passport from "passport";
 
 const router = Router();
 
@@ -91,6 +93,39 @@ router.post("/signup", signup);
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 router.post("/login", login);
+
+/**
+ * @swagger
+ * /api/v1/auth/google:
+ *   get:
+ *     summary: Login with Google
+ *     tags: [Auth]
+ *     security: []
+ */
+router.get(
+  "/google",
+  passport.authenticate("google", {
+    scope: ["profile", "email"],
+    session: false,
+  })
+);
+
+/**
+ * @swagger
+ * /api/v1/auth/google/callback:
+ *   get:
+ *     summary: Google OAuth callback
+ *     tags: [Auth]
+ *     security: []
+ */
+router.get(
+  "/google/callback",
+  passport.authenticate("google", {
+    session: false,
+    failureRedirect: "/login",
+  }),
+  googleCallback
+);
 
 /**
  * @swagger

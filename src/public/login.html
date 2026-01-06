@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Google Login Test</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <style>
+      body {
+        font-family: system-ui, Arial, sans-serif;
+        background: #f5f5f5;
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .card {
+        background: white;
+        padding: 2rem;
+        border-radius: 8px;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+        text-align: center;
+      }
+
+      a {
+        display: inline-block;
+        margin-top: 1rem;
+        padding: 12px 20px;
+        background: #4285f4;
+        color: white;
+        text-decoration: none;
+        border-radius: 4px;
+        font-weight: 600;
+      }
+
+      a:hover {
+        background: #357ae8;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="card">
+      <h2>Login</h2>
+      <p>Sign in using Google</p>
+      <a href="/api/v1/auth/google">Login with Google</a>
+    </div>
+  </body>
+</html>
