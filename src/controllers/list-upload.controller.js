@@ -1,4 +1,3 @@
-// controllers/list-upload.controller.js
 import crypto from "crypto";
 import fs from "fs";
 import csv from "csv-parser";

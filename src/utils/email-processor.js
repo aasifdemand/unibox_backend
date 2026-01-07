@@ -1,4 +1,3 @@
-// utils/email.utils.js
 export const normalizeEmail = (email) => {
   if (!email || typeof email !== 'string') return null;
   
@@ -61,7 +60,8 @@ export const normalizeEmail = (email) => {
   
   // For custom domains, we might want to handle them differently
   // Many companies use Google Workspace or Microsoft 365
-  // We can add custom domain normalization rules here if needed
+  // We can add custom 
+  // domain normalization rules here if needed
   
   // For most other domains, just lowercase
   return trimmed;
@@ -75,12 +75,10 @@ export const extractDomain = (email) => {
 
 export const isValidEmail = (email) => {
   if (!email) return false;
-  // RFC 5322 compliant regex (simplified version)
   const emailRegex = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
   return emailRegex.test(email);
 };
 
-// Additional helper functions
 export const isDisposableEmail = (domain) => {
   const disposableDomains = [
     "tempmail.com", "10minutemail.com", "guerrillamail.com",
