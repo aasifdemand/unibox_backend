@@ -13,6 +13,7 @@ passport.use(
       try {
         const email = profile.emails[0].value;
         const name = profile.displayName;
+        const googleId = profile.id;
 
         let user = await User.findOne({ where: { email } });
 
@@ -22,6 +23,8 @@ passport.use(
             email,
             password: "GOOGLE_AUTH",
             role: "user",
+            googleId,
+            lastLoginAt : new Date(),
           });
         }
 

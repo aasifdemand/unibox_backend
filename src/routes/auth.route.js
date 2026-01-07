@@ -122,6 +122,7 @@ router.get(
   "/google/callback",
   passport.authenticate("google", {
     session: false,
+    prompt: "select_account",
     failureRedirect: "/login",
   }),
   googleCallback
