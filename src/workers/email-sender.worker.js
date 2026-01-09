@@ -10,8 +10,10 @@ import BounceEvent from "../models/bounce-event.model.js";
 import { getChannel } from "../queues/rabbitmq.js";
 import { QUEUES } from "../queues/queues.js";
 
+import { sendViaMicrosoftGraph } from "../utils/send-via-microsoft.js";
+
 /* =========================
-   STRUCTURED LOGGER
+   LOGGER
 ========================= */
 const log = (level, message, meta = {}) => {
   console.log(
@@ -26,180 +28,127 @@ const log = (level, message, meta = {}) => {
 };
 
 /* =========================
-   WORKER BOOT
+   WORKER
 ========================= */
 (async () => {
   const channel = await getChannel();
   await channel.assertQueue(QUEUES.EMAIL_SEND, { durable: true });
   channel.prefetch(5);
 
-  log("INFO", "📧 Email Sender started", {
-    queue: QUEUES.EMAIL_SEND,
-    prefetch: 5,
-  });
+  log("INFO", "📧 Email Sender started");
 
   channel.consume(QUEUES.EMAIL_SEND, async (msg) => {
     if (!msg) return;
 
     const { emailId } = JSON.parse(msg.content.toString());
 
-    log("INFO", "📥 Email job received", {
-      emailId,
-      deliveryTag: msg.fields.deliveryTag,
-    });
+    let email; // ✅ declare OUTSIDE try
 
     try {
-      /* =========================
-         LOAD EMAIL
-      ========================= */
-      const email = await Email.findByPk(emailId);
+      email = await Email.findByPk(emailId);
 
-      if (!email) {
-        log("WARN", "Email not found — acking", { emailId });
+      if (!email || email.status === "sent") {
         channel.ack(msg);
         return;
       }
 
-      if (email.status === "sent") {
-        log("INFO", "Email already sent — skipping", { emailId });
-        channel.ack(msg);
-        return;
-      }
-
-      /* =========================
-         LOAD SENDER
-      ========================= */
       const sender = await Sender.findByPk(email.senderId);
+      if (!sender) throw new Error("Sender not found");
 
-      if (!sender) {
-        throw new Error("Sender not found");
-      }
-
-      /* =========================
-         EMAIL EVENT → QUEUED
-      ========================= */
       await EmailEvent.create({
-        emailId: email.id,
+        emailId,
         eventType: "queued",
         eventTimestamp: new Date(),
-        metadata: {
-          queue: QUEUES.EMAIL_SEND,
+      });
+
+      let providerMessageId;
+
+      /* =========================
+         OUTLOOK (GRAPH)
+      ========================= */
+      if (sender.provider === "outlook") {
+        log("INFO", "📤 Sending via Microsoft Graph", {
           senderId: sender.id,
-        },
-      });
+        });
 
-      log("DEBUG", "🔐 Using SMTP config", {
-        senderId: sender.id,
-        provider: sender.provider,
-        smtpHost: sender.smtpHost,
-        smtpUser: sender.smtpUser,
-      });
+        const res = await sendViaMicrosoftGraph(sender, email);
+        providerMessageId = res.providerMessageId;
+      }
 
       /* =========================
-         SMTP TRANSPORT
+         SMTP (GMAIL / CUSTOM)
       ========================= */
-      const transporter = nodemailer.createTransport({
-        host: sender.smtpHost,
-        port: sender.smtpPort,
-        secure: sender.smtpSecure,
-        auth: {
-          user: sender.smtpUser,
-          pass: sender.smtpPass,
-        },
-      });
+      else {
+        const transporter = nodemailer.createTransport({
+          host: sender.smtpHost,
+          port: sender.smtpPort,
+          secure: sender.smtpSecure,
+          auth: {
+            user: sender.smtpUser,
+            pass: sender.smtpPass,
+          },
+        });
 
-      /* =========================
-         SEND EMAIL
-      ========================= */
-      const start = Date.now();
+        const result = await transporter.sendMail({
+          from: `"${sender.displayName}" <${sender.email}>`,
+          to: email.recipientEmail,
+          subject: email.metadata.subject,
+          html: email.metadata.htmlBody,
+        });
 
-      const result = await transporter.sendMail({
-        from: `"${sender.displayName}" <${sender.email}>`,
-        to: email.recipientEmail,
-        subject: email.metadata.subject,
-        html: email.metadata.htmlBody,
-      });
+        providerMessageId = result.messageId;
+      }
 
-      const durationMs = Date.now() - start;
-
-      /* =========================
-         EMAIL EVENT → SENT
-      ========================= */
       await EmailEvent.create({
-        emailId: email.id,
+        emailId,
         eventType: "sent",
         eventTimestamp: new Date(),
         metadata: {
           provider: sender.provider,
-          messageId: result.messageId,
-          response: result.response,
-          durationMs,
+          providerMessageId,
         },
       });
 
       await email.update({
         status: "sent",
-        providerMessageId: result.messageId,
+        providerMessageId,
         sentAt: new Date(),
       });
 
-      log("INFO", "✅ Email SENT", {
+      log("INFO", "✅ Email sent", {
         emailId,
-        campaignId: email.campaignId,
-        messageId: result.messageId,
-        durationMs,
+        provider: sender.provider,
       });
 
       channel.ack(msg);
     } catch (err) {
-      log("ERROR", "💥 SMTP send failed", {
+      log("ERROR", "💥 Email send failed", {
         emailId,
         error: err.message,
-        code: err.code,
-        response: err.response,
       });
 
-      /* =========================
-         EMAIL EVENT → FAILED
-      ========================= */
       await EmailEvent.create({
         emailId,
         eventType: "failed",
         eventTimestamp: new Date(),
-        metadata: {
-          error: err.message,
-          code: err.code,
-          response: err.response,
-        },
+        metadata: { error: err.message },
       });
 
-      /* =========================
-         BOUNCE EVENT (HARD / SOFT)
-      ========================= */
       await BounceEvent.create({
         emailId,
-        bounceType:
-          err.responseCode && err.responseCode >= 500 ? "hard" : "soft",
+        bounceType: "hard",
         reason: err.message,
-        smtpResponse: err.response,
         occurredAt: new Date(),
-        metadata: {
-          code: err.code,
-        },
       });
 
-      /* =========================
-         STOP RECIPIENT
-      ========================= */
-      await CampaignRecipient.update(
-        { status: "bounced" },
-        { where: { email: email?.recipientEmail } }
-      );
+      if (email?.recipientEmail) {
+        await CampaignRecipient.update(
+          { status: "bounced" },
+          { where: { email: email.recipientEmail } }
+        );
+      }
 
-      /* =========================
-         RETRY (TRANSIENT ONLY)
-      ========================= */
-      channel.nack(msg, false, true);
+      channel.ack(msg); // ❌ do NOT retry hard failures
     }
   });
 })();

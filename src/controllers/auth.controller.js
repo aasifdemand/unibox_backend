@@ -10,6 +10,7 @@ import { Op } from "sequelize";
 
 
 
+
 export const signup = asyncHandler(async (req, res) => {
   const { name, email, password } = req.body;
 
@@ -105,6 +106,8 @@ export const logout =asyncHandler(async (req, res) => {
 
   res.ok({ message: "Logged out successfully" });
 }) 
+
+
 
 
 

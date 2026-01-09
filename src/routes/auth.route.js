@@ -8,6 +8,8 @@ import {
   signup,
 } from "../controllers/auth.controller.js";
 import passport from "passport";
+import { protect, protectOptional } from "../middlewares/auth.middleware.js";
+import Sender from "../models/sender.model.js";
 
 const router = Router();
 
@@ -127,6 +129,94 @@ router.get(
   }),
   googleCallback
 );
+
+/**
+ * Start Outlook OAuth
+ */
+router.get("/microsoft/start", (req, res, next) => {
+  const { userId } = req.query;
+
+  if (!userId) {
+    return res.status(400).json({
+      success: false,
+      message: "Missing userId",
+    });
+  }
+
+  passport.authenticate("microsoft", {
+    prompt: "select_account",
+    scope: [
+      "openid",
+      "profile",
+      "offline_access",
+      "User.Read",
+      "Mail.Send",
+      "Mail.Read",
+    ],
+    state: userId, // 👈 CRITICAL
+    session: false,
+  })(req, res, next);
+});
+
+
+
+/**
+ * OAuth callback
+ */
+router.get(
+  "/microsoft/callback",
+  passport.authenticate("microsoft", {
+    session: false,
+    failureRedirect: `${process.env.FRONTEND_URL}/connect/outlook?error=oauth_failed`,
+  }),
+  async (req, res) => {
+    try {
+      const userId = req.query.state;
+
+      if (!userId) {
+        throw new Error("Missing OAuth state (userId)");
+      }
+
+      const {
+        _accessToken,
+        _refreshToken,
+        _expiresIn,
+        displayName,
+        emails,
+        _json,
+      } = req.user;
+
+      const email =
+        emails?.[0]?.value ||
+        _json?.mail ||
+        _json?.userPrincipalName;
+
+      await Sender.create({
+        userId,
+        email,
+        displayName,
+        domain: email.split("@")[1],
+        provider: "outlook",
+
+        oauthProvider: "microsoft",
+        oauthAccessToken: _accessToken,
+        oauthRefreshToken: _refreshToken,
+        oauthExpiresAt: new Date(Date.now() + _expiresIn * 1000),
+      });
+
+      res.redirect(
+        `${process.env.FRONTEND_URL}/senders?connected=outlook`
+      );
+    } catch (err) {
+      console.error(err);
+      res.redirect(
+        `${process.env.FRONTEND_URL}/senders?error=save_failed`
+      );
+    }
+  }
+);
+
+
 
 /**
  * @swagger

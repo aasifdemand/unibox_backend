@@ -15,7 +15,6 @@ const Sender = sequelize.define(
       allowNull: false,
     },
 
-    
     email: {
       type: DataTypes.STRING,
       allowNull: false,
@@ -32,34 +31,52 @@ const Sender = sequelize.define(
       allowNull: false,
     },
 
-    
-   
-
+    /* =========================
+       PROVIDER
+    ========================= */
     provider: {
-      type: DataTypes.ENUM("smtp", "gmail", "ses"),
-      defaultValue: "smtp",
+      type: DataTypes.ENUM("gmail", "smtp", "outlook"),
+      allowNull: false,
     },
 
+    /* =========================
+       SMTP (Gmail / Custom)
+    ========================= */
     smtpHost: DataTypes.STRING,
     smtpPort: DataTypes.INTEGER,
-    smtpSecure: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: false,
+    smtpSecure: DataTypes.BOOLEAN,
+    smtpUser: DataTypes.STRING,
+    smtpPass: DataTypes.STRING,
+
+    /* =========================
+       MICROSOFT OAUTH
+    ========================= */
+    oauthProvider: {
+      type: DataTypes.STRING, // "microsoft"
     },
 
-    smtpUser: DataTypes.STRING,
-    smtpPass: DataTypes.STRING, // 🔐 encrypt later
+    oauthClientId: DataTypes.STRING,
+    oauthTenantId: DataTypes.STRING,
 
-    
-    
+    oauthAccessToken: DataTypes.TEXT,
+    oauthRefreshToken: DataTypes.TEXT,
+
+    oauthExpiresAt: DataTypes.DATE,
+
+    /* =========================
+       STATE
+    ========================= */
+    isVerified: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true,
+    },
+
   },
   {
     tableName: "senders",
     timestamps: true,
     paranoid: true,
-    indexes: [
-      { fields: ["email"], unique: true },
-    ],
+    indexes: [{ fields: ["email"], unique: true }],
   }
 );
 

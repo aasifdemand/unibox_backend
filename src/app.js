@@ -1,6 +1,8 @@
 import express from "express";
 import cookieParser from "cookie-parser";
-import passport from "./config/passport.js";
+import passport from "passport" 
+import "./config/passport-google.config.js";
+import "./config/passport-microsoft.config.js";
 import swaggerUi from "swagger-ui-express";
 import { swaggerSpec } from "./utils/swagger.js";
 import authRoutes from "./routes/auth.route.js";

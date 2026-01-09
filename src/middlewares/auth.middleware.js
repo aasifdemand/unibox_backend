@@ -26,3 +26,23 @@ export const protect = async (req, res, next) => {
     next(new AppError("Invalid or expired token", 401));
   }
 };
+
+
+export const protectOptional = async (req, res, next) => {
+  const token = req.cookies?.access_token;
+
+  if (!token) {
+    req.user = null;
+    return next();
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findByPk(decoded.id);
+    req.user = user || null;
+  } catch {
+    req.user = null;
+  }
+
+  next();
+};

@@ -1,6 +1,7 @@
 import Sender from "../models/sender.model.js";
 import { asyncHandler } from "../helpers/async-handler.js";
 import AppError from "../utils/app-error.js";
+import { testSmtpConnection } from "../utils/smtp-tester.js";
 
 export const createSender = asyncHandler(async (req, res) => {
   const {
@@ -14,10 +15,45 @@ export const createSender = asyncHandler(async (req, res) => {
     smtpPassword,
   } = req.body;
 
-  if (!email || !provider) {
-    throw new AppError("Email and provider are required", 400);
+  if (!email || !displayName || !provider) {
+    throw new AppError("Missing required fields", 400);
   }
 
+  /* =========================
+     OUTLOOK GUARD
+  ========================= */
+  if (provider === "outlook") {
+    throw new AppError(
+      "Outlook sender must be connected using Microsoft OAuth",
+      400
+    );
+  }
+
+  /* =========================
+     SMTP VALIDATION
+  ========================= */
+  if (!smtpHost || !smtpPort || !smtpUser || !smtpPassword) {
+    throw new AppError("Incomplete SMTP configuration", 400);
+  }
+
+  /* =========================
+     REAL SMTP HANDSHAKE
+  ========================= */
+  try {
+    await testSmtpConnection({
+      smtpHost,
+      smtpPort,
+      smtpSecure,
+      smtpUser,
+      smtpPass: smtpPassword,
+    });
+  } catch (err) {
+    throw new AppError(`SMTP connection failed: ${err.message}`, 400);
+  }
+
+  /* =========================
+     CREATE SENDER
+  ========================= */
   const sender = await Sender.create({
     userId: req.user.id,
     email,
@@ -28,8 +64,7 @@ export const createSender = asyncHandler(async (req, res) => {
     smtpPort,
     smtpSecure,
     smtpUser,
-    smtpPass:smtpPassword,
-   
+    smtpPass: smtpPassword,
   });
 
   res.status(201).json({
@@ -46,4 +81,3 @@ export const listSenders = asyncHandler(async (req, res) => {
 
   res.json({ success: true, data: senders });
 });
-
