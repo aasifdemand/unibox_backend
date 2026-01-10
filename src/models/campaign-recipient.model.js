@@ -25,17 +25,6 @@ const CampaignRecipient = sequelize.define(
       allowNull: true, // optional but recommended
     },
 
-    /**
-     * Dynamic variables for template rendering
-     * Example:
-     * {
-     *   industry: "FinTech",
-     *   jobTitle: "CTO",
-     *   company: "Acme",
-     *   role: "Decision Maker",
-     *   isCEO: false
-     * }
-     */
     metadata: {
       type: DataTypes.JSONB,
       defaultValue: {},
@@ -59,6 +48,11 @@ const CampaignRecipient = sequelize.define(
     },
 
     lastSentAt: DataTypes.DATE,
+    repliedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    }
+
   },
   {
     tableName: "campaign_recipients",

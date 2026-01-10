@@ -40,7 +40,7 @@ const Sender = sequelize.define(
     },
 
     /* =========================
-       SMTP (Gmail / Custom)
+       SMTP (SEND)
     ========================= */
     smtpHost: DataTypes.STRING,
     smtpPort: DataTypes.INTEGER,
@@ -49,18 +49,29 @@ const Sender = sequelize.define(
     smtpPass: DataTypes.STRING,
 
     /* =========================
+       IMAP (RECEIVE)
+    ========================= */
+    imapHost: DataTypes.STRING,
+    imapPort: DataTypes.INTEGER,
+    imapSecure: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true,
+    },
+    imapUser: DataTypes.STRING,
+    imapPass: DataTypes.STRING,
+
+    lastInboxSyncAt: DataTypes.DATE,
+
+    /* =========================
        MICROSOFT OAUTH
     ========================= */
-    oauthProvider: {
-      type: DataTypes.STRING, // "microsoft"
-    },
+    oauthProvider: DataTypes.STRING, // "microsoft"
 
     oauthClientId: DataTypes.STRING,
     oauthTenantId: DataTypes.STRING,
 
     oauthAccessToken: DataTypes.TEXT,
     oauthRefreshToken: DataTypes.TEXT,
-
     oauthExpiresAt: DataTypes.DATE,
 
     /* =========================
@@ -70,13 +81,12 @@ const Sender = sequelize.define(
       type: DataTypes.BOOLEAN,
       defaultValue: true,
     },
-
   },
   {
     tableName: "senders",
     timestamps: true,
     paranoid: true,
-    indexes: [{ fields: ["email"], unique: true }],
+    indexes: [{ unique: true, fields: ["email"] }],
   }
 );
 

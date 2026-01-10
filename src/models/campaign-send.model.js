@@ -14,11 +14,14 @@ const CampaignSend = sequelize.define(
     emailId: DataTypes.UUID,
 
     status: {
-      type: DataTypes.ENUM("queued", "sent", "failed"),
+      type: DataTypes.ENUM("queued", "sent", "failed", "skipped"),
       defaultValue: "queued",
     },
 
     sentAt: DataTypes.DATE,
+    openedAt: DataTypes.DATE,
+    repliedAt: DataTypes.DATE,
+
   },
   {
     tableName: "campaign_sends",

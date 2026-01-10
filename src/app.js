@@ -10,6 +10,7 @@ import userRoutes from "./routes/user.routes.js";
 import listUploadRoutes from "./routes/list-upload.route.js";
 import campaignRoutes from "./routes/campaign.route.js";
 import senderRoutes from "./routes/sender.routes.js";
+import analyticsRoutes from "./routes/analytics.routes.js"
 import { responseMiddleware } from "./middlewares/response.middleware.js";
 import errorHandler from "./middlewares/error.middleware.js";
 import path from "path";
@@ -49,6 +50,7 @@ app.use("/api/v1/users", userRoutes);
 app.use("/api/v1/lists", listUploadRoutes)
 app.use("/api/v1/senders",senderRoutes)
 app.use("/api/v1/campaigns",campaignRoutes)
+app.use("/api/v1/analytics", analyticsRoutes)
 
 // swagger
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));

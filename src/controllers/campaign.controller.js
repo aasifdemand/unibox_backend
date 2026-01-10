@@ -65,7 +65,7 @@ export const activateCampaign = asyncHandler(async (req, res) => {
 
   assertCampaignTransition(campaign.status, "scheduled");
 
-  // 🔥 materialize recipients from list batch
+  // 🔥 materialize recipients from list batch WITH METADATA
   const records = await ListUploadRecord.findAll({
     where: {
       batchId: campaign.listBatchId,
@@ -76,21 +76,55 @@ export const activateCampaign = asyncHandler(async (req, res) => {
   const recipients = records.map((r) => ({
     campaignId: campaign.id,
     email: r.normalizedEmail,
+    name: r.name || null,
+    // Extract all metadata from the record
+    metadata: {
+      name: r.name,
+      firstName: r.firstName,
+      lastName: r.lastName,
+      company: r.company,
+      industry: r.industry,
+      title: r.title,
+      location: r.location,
+      phone: r.phone,
+      tags: r.tags,
+      customFields: r.customFields || {},
+      // Include all parsed data
+      ...(r.metadata || {}),
+    },
+    // Track source
+    sourceRecordId: r.id,
+    sourceBatchId: campaign.listBatchId,
   }));
 
   await CampaignRecipient.bulkCreate(recipients, {
     ignoreDuplicates: true,
+    validate: true,
   });
 
+  // Update counts
   await campaign.update({
     status: "scheduled",
     scheduledAt: new Date(),
+    totalRecipients: recipients.length,
+    pendingRecipients: recipients.length,
   });
+
+  // Log the materialization
+  console.log(`📊 Materialized ${recipients.length} recipients for campaign ${campaign.id}`);
 
   // kick scheduler
   await publishCampaignTick(campaign.id);
 
-  res.json({ success: true, message: "Campaign activated" });
+  res.json({ 
+    success: true, 
+    message: "Campaign activated",
+    data: {
+      campaignId: campaign.id,
+      recipientsCount: recipients.length,
+      materializedAt: new Date().toISOString()
+    }
+  });
 });
 
 /**

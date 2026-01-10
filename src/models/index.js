@@ -105,6 +105,11 @@ CampaignSend.belongsTo(CampaignRecipient, {
   foreignKey: "recipientId",
 });
 
+CampaignSend.belongsTo(Email, {
+  foreignKey: "emailId",
+
+  onDelete: "SET NULL",
+})
 /* =========================
    EMAIL LIFECYCLE
 ========================= */

@@ -1,18 +1,29 @@
 import Sender from "../models/sender.model.js";
 import { asyncHandler } from "../helpers/async-handler.js";
 import AppError from "../utils/app-error.js";
+
 import { testSmtpConnection } from "../utils/smtp-tester.js";
+import { testImapConnection } from "../utils/imap-tester.js";
 
 export const createSender = asyncHandler(async (req, res) => {
   const {
     email,
     displayName,
     provider,
+
+    /* SMTP */
     smtpHost,
     smtpPort,
     smtpSecure,
     smtpUser,
     smtpPassword,
+
+    /* IMAP */
+    imapHost,
+    imapPort,
+    imapSecure,
+    imapUser,
+    imapPassword,
   } = req.body;
 
   if (!email || !displayName || !provider) {
@@ -37,7 +48,14 @@ export const createSender = asyncHandler(async (req, res) => {
   }
 
   /* =========================
-     REAL SMTP HANDSHAKE
+     IMAP VALIDATION
+  ========================= */
+  if (!imapHost || !imapPort || !imapUser || !imapPassword) {
+    throw new AppError("Incomplete IMAP configuration", 400);
+  }
+
+  /* =========================
+     SMTP HANDSHAKE
   ========================= */
   try {
     await testSmtpConnection({
@@ -52,19 +70,46 @@ export const createSender = asyncHandler(async (req, res) => {
   }
 
   /* =========================
+     IMAP HANDSHAKE
+  ========================= */
+  try {
+    await testImapConnection({
+      imapHost,
+      imapPort,
+      imapSecure,
+      imapUser,
+      imapPass: imapPassword,
+    });
+  } catch (err) {
+    throw new AppError(`IMAP connection failed: ${err.message}`, 400);
+  }
+
+  /* =========================
      CREATE SENDER
   ========================= */
   const sender = await Sender.create({
     userId: req.user.id,
+
     email,
     displayName,
     domain: email.split("@")[1],
     provider,
+
+    /* SMTP */
     smtpHost,
     smtpPort,
     smtpSecure,
     smtpUser,
     smtpPass: smtpPassword,
+
+    /* IMAP */
+    imapHost,
+    imapPort,
+    imapSecure,
+    imapUser,
+    imapPass: imapPassword,
+
+    isVerified: true,
   });
 
   res.status(201).json({
@@ -72,6 +117,7 @@ export const createSender = asyncHandler(async (req, res) => {
     data: sender,
   });
 });
+
 
 export const listSenders = asyncHandler(async (req, res) => {
   const senders = await Sender.findAll({

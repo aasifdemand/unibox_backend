@@ -3,200 +3,368 @@ import "../models/index.js";
 import Campaign from "../models/campaign.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
 import CampaignStep from "../models/campaign-step.model.js";
+import CampaignSend from "../models/campaign-send.model.js";
 import Email from "../models/email.model.js";
 
 import { getChannel } from "../queues/rabbitmq.js";
 import { QUEUES } from "../queues/queues.js";
 import { renderTemplate } from "../utils/template-renderer.js";
 
-/* =========================
-   STRUCTURED LOGGER
-========================= */
-const log = (level, message, meta = {}) => {
+const log = (level, message, meta = {}) =>
   console.log(
     JSON.stringify({
-      timestamp: new Date().toISOString(),
+      ts: new Date().toISOString(),
       service: "campaign-orchestrator",
       level,
       message,
       ...meta,
     })
   );
-};
 
-/* =========================
-   WORKER BOOT
-========================= */
 (async () => {
-  const channel = await getChannel();
+  try {
+    log("INFO", "🚀 Starting Campaign Orchestrator...");
 
-  await channel.assertQueue(QUEUES.CAMPAIGN_SEND, { durable: true });
-  channel.prefetch(1);
+    const channel = await getChannel();
+    log("INFO", "✅ RabbitMQ channel connected");
 
-  log("INFO", "🚀 Campaign Orchestrator started", {
-    queue: QUEUES.CAMPAIGN_SEND,
-    prefetch: 1,
-  });
+    await channel.assertQueue(QUEUES.CAMPAIGN_SEND, { durable: true });
+    log("INFO", `✅ Queue ${QUEUES.CAMPAIGN_SEND} asserted`);
 
-  channel.consume(QUEUES.CAMPAIGN_SEND, async (msg) => {
-    if (!msg) return;
+    channel.prefetch(1);
+    log("INFO", "🔄 Prefetch set to 1");
 
-    const payload = JSON.parse(msg.content.toString());
-    const { campaignId, recipientId, step } = payload;
+    log("INFO", "📭 Campaign Orchestrator ready to consume messages");
 
-    log("INFO", "📥 Orchestration job received", payload);
+    channel.consume(QUEUES.CAMPAIGN_SEND, async (msg) => {
+      if (!msg) {
+        log("WARN", "Received null message from queue");
+        return;
+      }
 
-    try {
-      /* =========================
-         LOAD CORE DATA
-      ========================= */
-      const campaign = await Campaign.findByPk(campaignId);
-      const recipient = await CampaignRecipient.findByPk(recipientId);
-
-      if (!campaign || !recipient) {
-        log("WARN", "⚠️ Campaign or recipient missing — acking", payload);
+      let payload;
+      try {
+        payload = JSON.parse(msg.content.toString());
+        log("DEBUG", "📥 Message received from campaign-scheduler", {
+          queue: QUEUES.CAMPAIGN_SEND,
+          messageId: msg.properties.messageId,
+          payload,
+        });
+      } catch (parseErr) {
+        log("ERROR", "❌ Failed to parse message payload", {
+          error: parseErr.message,
+          rawContent: msg.content.toString().substring(0, 200),
+        });
         channel.ack(msg);
         return;
       }
 
-      if (campaign.status !== "running") {
-        log("INFO", "⏸ Campaign not running — skipping", {
+      const { campaignId, recipientId, step } = payload;
+      const processingId = `${campaignId}-${recipientId}-${step}`;
+
+      log("INFO", "🔍 Processing campaign orchestration", {
+        processingId,
+        campaignId,
+        recipientId,
+        step,
+      });
+
+      try {
+        // Fetch campaign and recipient in parallel
+        log("DEBUG", "📋 Fetching campaign and recipient data", {
+          processingId,
           campaignId,
-          status: campaign.status,
-        });
-        channel.ack(msg);
-        return;
-      }
-
-      if (recipient.status !== "pending") {
-        log("INFO", "⏭ Recipient already processed — skipping", {
           recipientId,
-          status: recipient.status,
         });
-        channel.ack(msg);
-        return;
-      }
 
-      /* =========================
-         STEP RESOLUTION
-      ========================= */
-      let stepConfig;
+        const [campaign, recipient] = await Promise.all([
+          Campaign.findByPk(campaignId),
+          CampaignRecipient.findByPk(recipientId),
+        ]);
 
-      if (step === 0) {
-        stepConfig = campaign; // initial email
-      } else {
-        stepConfig = await CampaignStep.findOne({
-          where: {
+        if (!campaign) {
+          log("WARN", "❌ Campaign not found", {
+            processingId,
             campaignId,
-            stepOrder: step,
-          },
-        });
-      }
+          });
+          channel.ack(msg);
+          return;
+        }
 
-      if (!stepConfig) {
-        log("INFO", "🏁 No step found — recipient completed", {
+        if (!recipient) {
+          log("WARN", "❌ Recipient not found", {
+            processingId,
+            recipientId,
+          });
+          channel.ack(msg);
+          return;
+        }
+
+        log("DEBUG", "✅ Campaign and recipient found", {
+          processingId,
+          campaignName: campaign.name,
+          campaignStatus: campaign.status,
+          recipientEmail: recipient.email,
+          recipientStatus: recipient.status,
+          recipientCurrentStep: recipient.currentStep,
+        });
+
+        // Validate campaign status
+        if (campaign.status !== "running") {
+          log("WARN", "⏸️ Campaign is not running", {
+            processingId,
+            campaignId,
+            campaignStatus: campaign.status,
+          });
+          channel.ack(msg);
+          return;
+        }
+
+        // Validate recipient status
+        const blockedStatuses = ["replied", "bounced", "completed", "stopped"];
+        if (blockedStatuses.includes(recipient.status)) {
+          log("INFO", "⏹️ Recipient has blocked status", {
+            processingId,
+            recipientId,
+            recipientEmail: recipient.email,
+            recipientStatus: recipient.status,
+            requestedStep: step,
+            currentStep: recipient.currentStep,
+          });
+          channel.ack(msg);
+          return;
+        }
+
+        log("DEBUG", "✅ Recipient is eligible for processing", {
+          processingId,
+          recipientStatus: recipient.status,
+          requestedStep: step,
+        });
+
+        // Get step configuration
+        log("DEBUG", "📝 Looking for step configuration", {
+          processingId,
+          step,
+        });
+
+        let stepConfig;
+        if (step === 0) {
+          stepConfig = campaign;
+          log("DEBUG", "📌 Using campaign as step 0 configuration", {
+            processingId,
+            hasSubject: !!campaign.subject,
+            subjectPreview: campaign.subject?.substring(0, 50),
+          });
+        } else {
+          stepConfig = await CampaignStep.findOne({
+            where: { campaignId, stepOrder: step },
+          });
+
+          if (stepConfig) {
+            log("DEBUG", "✅ Found step configuration", {
+              processingId,
+              stepOrder: stepConfig.stepOrder,
+              delayMinutes: stepConfig.delayMinutes,
+              condition: stepConfig.condition,
+            });
+          } else {
+            log("WARN", "❌ Step configuration not found", {
+              processingId,
+              campaignId,
+              step,
+            });
+          }
+        }
+
+        // Handle missing step configuration
+        if (!stepConfig) {
+          log(
+            "INFO",
+            "🏁 No step config found, marking recipient as completed",
+            {
+              processingId,
+              recipientId,
+              email: recipient.email,
+            }
+          );
+
+          await recipient.update({
+            status: "completed",
+            completedAt: new Date(),
+          });
+
+          channel.ack(msg);
+          return;
+        }
+
+        // Check for existing send record (idempotency)
+        log("DEBUG", "🔒 Checking for existing send record", {
+          processingId,
+          campaignId,
           recipientId,
           step,
         });
 
-        await recipient.update({
-          status: "completed",
+        const [send, created] = await CampaignSend.findOrCreate({
+          where: { campaignId, recipientId, step },
+          defaults: {
+            senderId: campaign.senderId,
+            status: "queued",
+          },
+        });
+
+        log("DEBUG", "🆔 Send record check result", {
+          processingId,
+          sendId: send.id,
+          created,
+          existingStatus: send.status,
+        });
+
+        if (!created && send.status !== "queued") {
+          log("INFO", "⏭️ Send already processed with different status", {
+            processingId,
+            sendId: send.id,
+            status: send.status,
+          });
+          channel.ack(msg);
+          return;
+        }
+
+        // Render email templates
+        log("DEBUG", "🎨 Rendering email templates", {
+          processingId,
+          recipientName: recipient.name || "there",
+          recipientEmail: recipient.email,
+          metadataFields: Object.keys(recipient.metadata || {}).length,
+        });
+
+        const variables = {
+          name: recipient.name || "there",
+          email: recipient.email,
+          ...(recipient.metadata || {}),
+        };
+
+        const renderedSubject = renderTemplate(stepConfig.subject, variables);
+        const renderedHtmlBody = renderTemplate(stepConfig.htmlBody, variables);
+
+        log("DEBUG", "✅ Templates rendered successfully", {
+          processingId,
+          subjectLength: renderedSubject.length,
+          htmlBodyLength: renderedHtmlBody.length,
+          subjectPreview: renderedSubject.substring(0, 100) + "...",
+        });
+
+        // Create email record
+        log("INFO", "💾 Creating email record", {
+          processingId,
+          campaignId,
+          senderId: campaign.senderId,
+          recipientEmail: recipient.email,
+        });
+
+        const email = await Email.create({
+          userId: campaign.userId,
+          campaignId,
+          senderId: campaign.senderId,
+          recipientEmail: recipient.email,
+          metadata: {
+            subject: renderedSubject,
+            htmlBody: renderedHtmlBody,
+            step: step,
+            variables: variables,
+          },
+        });
+
+        log("INFO", "✅ Email record created", {
+          processingId,
+          emailId: email.id,
+          recipientEmail: email.recipientEmail,
+        });
+
+        // Update recipient and send records
+        log("DEBUG", "📝 Updating recipient and send records", {
+          processingId,
+          recipientId,
+          newStep: step + 1,
+          sendId: send.id,
+        });
+
+        await Promise.all([
+          recipient.update({
+            currentStep: step + 1,
+            lastSentAt: new Date(),
+            status: "pending",
+          }),
+          send.update({
+            emailId: email.id,
+            status: "queued",
+            updatedAt: new Date(),
+          }),
+        ]);
+
+        // Enqueue for email sending
+        log("INFO", "📤 Enqueuing email for sending", {
+          processingId,
+          emailId: email.id,
+          recipientEmail: recipient.email,
+          queue: QUEUES.EMAIL_SEND,
+        });
+
+        channel.sendToQueue(
+          QUEUES.EMAIL_SEND,
+          Buffer.from(JSON.stringify({ emailId: email.id })),
+          {
+            persistent: true,
+            headers: {
+              "processing-id": processingId,
+              "campaign-id": campaignId,
+              "recipient-id": recipientId,
+            },
+          }
+        );
+
+        log("INFO", "✅ Successfully orchestrated campaign step", {
+          processingId,
+          campaignId,
+          campaignName: campaign.name,
+          recipientId,
+          recipientEmail: recipient.email,
+          step,
+          nextStep: step + 1,
+          emailId: email.id,
+          sendId: send.id,
         });
 
         channel.ack(msg);
-        return;
+      } catch (err) {
+        log("ERROR", "❌ Orchestrator processing failed", {
+          processingId: processingId || "unknown",
+          campaignId,
+          recipientId,
+          step,
+          error: err.message,
+          stack: err.stack,
+          payload: JSON.stringify(payload),
+        });
+
+        // Don't requeue - ack to avoid infinite loops
+        channel.ack(msg);
       }
+    });
 
-      /* =========================
-         TEMPLATE VARIABLES
-      ========================= */
-      log("DEBUG", "🧩 Rendering template", {
-        recipientId,
-        step,
-      });
+    // Channel event handlers
+    channel.on("close", () => {
+      log("ERROR", "🔌 RabbitMQ channel closed unexpectedly");
+    });
 
-      const variables = {
-        name: recipient.name || "there",
-        email: recipient.email,
-
-        // copy-safe defaults
-        industry: recipient.metadata?.industry,
-        jobTitle: recipient.metadata?.jobTitle,
-        company: recipient.metadata?.company,
-
-        ...(recipient.metadata || {}),
-      };
-
-
-      const renderedSubject = renderTemplate(
-        stepConfig.subject,
-        variables
-      );
-
-      const renderedHtml = renderTemplate(
-        stepConfig.htmlBody,
-        variables
-      );
-
-
-      /* =========================
-         CREATE EMAIL RECORD
-      ========================= */
-      const email = await Email.create({
-        userId: campaign.userId,
-        campaignId,
-        senderId: campaign.senderId,
-        recipientEmail: recipient.email,
-        metadata: {
-          subject: renderedSubject,
-          htmlBody: renderedHtml,
-        },
-      });
-
-      /* =========================
-         UPDATE RECIPIENT STATE
-      ========================= */
-      await recipient.update({
-        status: "sent",
-        lastSentAt: new Date(),
-        currentStep: step + 1,
-      });
-
-      log("INFO", "📨 Email created & queued", {
-        campaignId,
-        recipientId,
-        emailId: email.id,
-        step,
-        nextStep: step + 1,
-      });
-
-      /* =========================
-         QUEUE EMAIL SEND
-      ========================= */
-      channel.sendToQueue(
-        QUEUES.EMAIL_SEND,
-        Buffer.from(
-          JSON.stringify({
-            emailId: email.id,
-          })
-        ),
-        { persistent: true }
-      );
-
-      channel.ack(msg);
-    } catch (err) {
-      log("ERROR", "💥 Orchestration failed", {
-        payload,
-        error: err.message,
-        stack: err.stack,
-      });
-
-      /**
-       * IMPORTANT:
-       * Requeue ONLY transient failures.
-       * Code bugs should be ACKed after fix.
-       */
-      channel.nack(msg, false, true);
-    }
-  });
+    channel.on("error", (err) => {
+      log("ERROR", "⚡ RabbitMQ channel error", { error: err.message });
+    });
+  } catch (startupErr) {
+    log("ERROR", "💥 Failed to start Campaign Orchestrator", {
+      error: startupErr.message,
+      stack: startupErr.stack,
+    });
+    process.exit(1);
+  }
 })();

@@ -58,6 +58,32 @@ const Campaign = sequelize.define(
     scheduledAt: {
       type: DataTypes.DATE,
     },
+
+    totalSent: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
+    totalReplied: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
+    completedAt: {
+      type: DataTypes.DATE,
+    },
+
+    timezone: {
+      type: DataTypes.STRING,
+      defaultValue: "UTC",
+    },
+    maxFollowUps: {
+      type: DataTypes.INTEGER,
+      defaultValue: 3,
+    },
+
+    throttlePerMinute: {
+      type: DataTypes.INTEGER,
+      defaultValue: 20,
+    },
   },
   {
     tableName: "campaigns",
