@@ -8,6 +8,8 @@ import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 import timezone from "dayjs/plugin/timezone.js";
 import { Op } from "sequelize";
+import { GlobalEmailRegistry } from "../models/index.js";
+import sequelize from "../config/db.js";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -115,6 +117,26 @@ const log = (level, message, meta = {}) =>
 
             // Get recipients for this send window
             const recipients = await CampaignRecipient.findAll({
+              include: [
+                {
+                  model: GlobalEmailRegistry,
+                  required: true, // ⬅️ INNER JOIN (critical)
+                  attributes: [],
+                  where: {
+                    verificationStatus: "valid",
+                  },
+                  on: {
+                    normalizedEmail: sequelize.where(
+                      sequelize.fn(
+                        "lower",
+                        sequelize.col("CampaignRecipient.email")
+                      ),
+                      "=",
+                      sequelize.col("GlobalEmailRegistry.normalizedEmail")
+                    ),
+                  },
+                },
+              ],
               where: {
                 campaignId: campaign.id,
                 status: {

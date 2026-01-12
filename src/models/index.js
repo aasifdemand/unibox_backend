@@ -109,7 +109,7 @@ CampaignSend.belongsTo(Email, {
   foreignKey: "emailId",
 
   onDelete: "SET NULL",
-})
+});
 /* =========================
    EMAIL LIFECYCLE
 ========================= */
@@ -172,7 +172,22 @@ ListUploadBatch.hasMany(Campaign, {
   foreignKey: "listBatchId",
 });
 
+/* =========================
+   EMAIL VERIFICATION LINK
+========================= */
 
+// CampaignRecipient.email  → GlobalEmailRegistry.normalizedEmail
+CampaignRecipient.hasOne(GlobalEmailRegistry, {
+  sourceKey: "email",
+  foreignKey: "normalizedEmail",
+  constraints: false, // VERY IMPORTANT
+});
+
+GlobalEmailRegistry.belongsTo(CampaignRecipient, {
+  targetKey: "email",
+  foreignKey: "normalizedEmail",
+  constraints: false,
+});
 
 export {
   User,

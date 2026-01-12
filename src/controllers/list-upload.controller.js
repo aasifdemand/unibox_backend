@@ -1,5 +1,7 @@
 import crypto from "crypto";
 import fs from "fs";
+import { promises as fsPromises } from "fs";
+import path from "path";
 import csv from "csv-parser";
 import XLSX from "xlsx";
 import ListUploadBatch from "../models/list-upload-batch.model.js";
@@ -8,22 +10,50 @@ import GlobalEmailRegistry from "../models/global-email-registry.model.js";
 import { Op } from "sequelize";
 import { asyncHandler } from "../helpers/async-handler.js";
 import sequelize from "../config/db.js";
-import { 
-  normalizeEmail, 
-  extractDomain, 
+import {
+  normalizeEmail,
+  extractDomain,
   isValidEmail,
-  getEmailProvider 
+  getEmailProvider,
 } from "../utils/email-processor.js";
+import { enqueueEmailVerification } from "../helpers/enqueue-email-verifier.js";
+
+// Ensure uploads directory exists
+const ensureUploadsDir = async () => {
+  const uploadsDir = path.join(process.cwd(), "src/uploads");
+  try {
+    await fsPromises.access(uploadsDir);
+  } catch {
+    await fsPromises.mkdir(uploadsDir, { recursive: true });
+  }
+  return uploadsDir;
+};
 
 export const uploadList = async (req, res) => {
-  const file = req.file;
-  const userId = req.user.id;
-
-  if (!file) {
-    return res.status(400).json({ message: "File required" });
-  }
-
   try {
+    // Ensure upload directory exists
+    await ensureUploadsDir();
+
+    const file = req.file;
+    const userId = req.user.id;
+
+    if (!file) {
+      return res.status(400).json({
+        success: false,
+        message: "File required",
+      });
+    }
+
+    console.log(`📁 File uploaded: ${file.originalname}, path: ${file.path}`);
+
+    // Check if file exists
+    if (!fs.existsSync(file.path)) {
+      return res.status(500).json({
+        success: false,
+        message: "File not saved properly",
+      });
+    }
+
     // Calculate checksum
     const fileBuffer = fs.readFileSync(file.path);
     const checksum = crypto
@@ -36,16 +66,22 @@ export const uploadList = async (req, res) => {
       where: {
         userId,
         checksum,
-        status: { [Op.ne]: "failed" }
-      }
+        status: { [Op.ne]: "failed" },
+      },
     });
 
     if (existingBatch) {
-      fs.unlinkSync(file.path);
+      // Clean up uploaded file
+      try {
+        fs.unlinkSync(file.path);
+      } catch (cleanupError) {
+        console.error("Failed to cleanup duplicate file:", cleanupError);
+      }
+
       return res.status(409).json({
         success: false,
         message: "Duplicate upload detected",
-        batchId: existingBatch.id
+        batchId: existingBatch.id,
       });
     }
 
@@ -59,89 +95,48 @@ export const uploadList = async (req, res) => {
       status: "uploaded",
     });
 
-    // Parse and process immediately (non-blocking via setTimeout)
-    setTimeout(() => processUploadedFile(batch.id, userId), 0);
+    console.log(`✅ Batch created: ${batch.id}`);
+
+    // Parse and process immediately (non-blocking)
+    processUploadedFile(batch.id, userId).catch((error) => {
+      console.error(`❌ Failed to process batch ${batch.id}:`, error);
+    });
 
     return res.status(202).json({
       success: true,
       batchId: batch.id,
       status: "uploaded",
-      message: "File accepted and processing started"
+      message: "File accepted and processing started",
     });
-
   } catch (error) {
-    if (file && file.path && fs.existsSync(file.path)) {
-      fs.unlinkSync(file.path);
+    console.error("Upload error:", error);
+
+    // Clean up file if exists
+    if (req.file && req.file.path && fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (cleanupError) {
+        console.error("Failed to cleanup error file:", cleanupError);
+      }
     }
-    
+
     return res.status(500).json({
       success: false,
       message: "Upload failed",
-      error: error.message
+      error: error.message,
     });
   }
 };
 
-// Async processing function
-const processUploadedFile = async (batchId, userId) => {
-  const batch = await ListUploadBatch.findByPk(batchId);
-  if (!batch) return;
-
-  try {
-    await batch.update({ status: "parsing" });
-    
-    // Parse file based on type
-    let records = [];
-    switch (batch.fileType) {
-      case "csv":
-        records = await parseCSV(batch.storagePath);
-        break;
-      case "xlsx":
-        records = await parseXLSX(batch.storagePath);
-        break;
-      case "txt":
-        records = await parseTXT(batch.storagePath);
-        break;
-      default:
-        throw new Error(`Unsupported file type: ${batch.fileType}`);
-    }
-
-    console.log(`Parsed ${records.length} records from file`);
-    
-    if (records.length > 0) {
-      console.log('Sample record:', records[0]);
-    }
-
-    // Process each record
-    await processRecords(batch, records);
-
-  } catch (error) {
-    console.error('Processing error:', error);
-    await batch.update({
-      status: "failed",
-      errorReason: error.message
-    });
-    
-    // Clean up file if processing fails
-    try {
-      if (batch.storagePath && fs.existsSync(batch.storagePath)) {
-        fs.unlinkSync(batch.storagePath);
-      }
-    } catch (cleanupError) {
-      console.error('Failed to clean up file:', cleanupError);
-    }
-  }
-};
-
-// Parse CSV
+// CSV Parser function (was missing)
 const parseCSV = (filePath) => {
   return new Promise((resolve, reject) => {
-    const records = [];
+    const results = [];
     fs.createReadStream(filePath)
       .pipe(csv())
-      .on("data", (row) => records.push(row))
-      .on("end", () => resolve(records))
-      .on("error", reject);
+      .on("data", (data) => results.push(data))
+      .on("end", () => resolve(results))
+      .on("error", (error) => reject(error));
   });
 };
 
@@ -152,37 +147,38 @@ const parseXLSX = (filePath) => {
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
     const records = XLSX.utils.sheet_to_json(worksheet);
-    
-    // Normalize header names (remove spaces, lowercase)
-    return records.map(record => {
+
+    // Normalize header names
+    return records.map((record) => {
       const normalizedRecord = {};
-      Object.keys(record).forEach(key => {
+      Object.keys(record).forEach((key) => {
         if (record[key] !== undefined && record[key] !== null) {
-          const normalizedKey = key.toString().toLowerCase().replace(/\s+/g, '');
+          const normalizedKey = key
+            .toString()
+            .toLowerCase()
+            .replace(/\s+/g, "");
           normalizedRecord[normalizedKey] = record[key];
         }
       });
       return normalizedRecord;
     });
   } catch (error) {
-    console.error('Excel parsing error:', error);
+    console.error("Excel parsing error:", error);
     throw new Error(`Failed to parse Excel file: ${error.message}`);
   }
 };
 
-// Parse TXT (one email per line)
+// Parse TXT
 const parseTXT = (filePath) => {
   const content = fs.readFileSync(filePath, "utf-8");
   return content
     .split("\n")
-    .filter(line => line.trim())
-    .map(line => {
+    .filter((line) => line.trim())
+    .map((line) => {
       const trimmed = line.trim();
-      // Try to detect if line contains CSV-like data
-      if (trimmed.includes(',') && !trimmed.includes('@')) {
-        // Might be a CSV line, try to parse
-        const parts = trimmed.split(',');
-        if (parts.length > 1 && parts[0].includes('@')) {
+      if (trimmed.includes(",") && !trimmed.includes("@")) {
+        const parts = trimmed.split(",");
+        if (parts.length > 1 && parts[0].includes("@")) {
           return { email: parts[0].trim() };
         }
       }
@@ -190,163 +186,264 @@ const parseTXT = (filePath) => {
     });
 };
 
-// Find email field in record (case-insensitive)
+// Find email field in record
 const findEmailField = (record) => {
   if (!record) return null;
-  
+
   const possibleEmailFields = [
-    'email', 'emailaddress', 'mail', 'e-mail', 'e_mail', 'emailid',
-    'useremail', 'username', 'contactemail', 'primaryemail'
+    "email",
+    "emailaddress",
+    "mail",
+    "e-mail",
+    "e_mail",
+    "emailid",
+    "useremail",
+    "username",
+    "contactemail",
+    "primaryemail",
   ];
-  
+
   // Check exact matches first
   for (const field of possibleEmailFields) {
-    if (record[field] !== undefined && record[field] !== null && record[field] !== '') {
-      return String(record[field]);
+    if (
+      record[field] !== undefined &&
+      record[field] !== null &&
+      record[field] !== ""
+    ) {
+      return String(record[field]).trim();
     }
   }
-  
+
   // Check if any key contains "email"
   for (const key in record) {
-    if (key.toLowerCase().includes('email') && 
-        record[key] !== undefined && record[key] !== null && record[key] !== '') {
-      return String(record[key]);
+    if (
+      key.toLowerCase().includes("email") &&
+      record[key] !== undefined &&
+      record[key] !== null &&
+      record[key] !== ""
+    ) {
+      return String(record[key]).trim();
     }
   }
-  
-  // Check first column if no email field found
+
+  // Check first column
   const firstKey = Object.keys(record)[0];
   if (firstKey && record[firstKey]) {
-    const value = String(record[firstKey]);
-    if (value.includes('@')) {
+    const value = String(record[firstKey]).trim();
+    if (value.includes("@")) {
       return value;
     }
   }
-  
-  // Check all values for email-like pattern
+
+  // Check all values
   for (const key in record) {
-    const value = String(record[key]);
-    if (value.includes('@') && value.includes('.')) {
+    const value = String(record[key]).trim();
+    if (value.includes("@") && value.includes(".")) {
       return value;
     }
   }
-  
+
   return null;
 };
 
 // Find name field in record
 const findNameField = (record) => {
   if (!record) return null;
-  
+
   const possibleNameFields = [
-    'name', 'fullname', 'full_name', 'fullname',
-    'firstname', 'first_name', 'firstname',
-    'lastname', 'last_name', 'lastname',
-    'username', 'displayname', 'contactname', 'personname'
+    "name",
+    "fullname",
+    "full_name",
+    "firstname",
+    "first_name",
+    "lastname",
+    "last_name",
+    "username",
+    "displayname",
+    "contactname",
+    "personname",
   ];
-  
-  // Check exact matches first
+
   for (const field of possibleNameFields) {
-    if (record[field] !== undefined && record[field] !== null && record[field] !== '') {
-      return String(record[field]);
+    if (
+      record[field] !== undefined &&
+      record[field] !== null &&
+      record[field] !== ""
+    ) {
+      return String(record[field]).trim();
     }
   }
-  
+
   // Check if any key contains "name"
   for (const key in record) {
-    if (key.toLowerCase().includes('name') && 
-        record[key] !== undefined && record[key] !== null && record[key] !== '') {
-      return String(record[key]);
+    if (
+      key.toLowerCase().includes("name") &&
+      record[key] !== undefined &&
+      record[key] !== null &&
+      record[key] !== ""
+    ) {
+      return String(record[key]).trim();
     }
   }
-  
+
   return null;
+};
+
+// Async processing function
+const processUploadedFile = async (batchId, userId) => {
+  let batch;
+  try {
+    batch = await ListUploadBatch.findByPk(batchId);
+    if (!batch) {
+      console.error(`Batch ${batchId} not found`);
+      return;
+    }
+
+    console.log(`🔄 Processing batch ${batchId}: ${batch.originalFilename}`);
+
+    // Check if file exists
+    if (!fs.existsSync(batch.storagePath)) {
+      throw new Error(`File not found: ${batch.storagePath}`);
+    }
+
+    await batch.update({ status: "parsing" });
+
+    let records = [];
+    switch (batch.fileType) {
+      case "csv":
+        console.log("📊 Parsing CSV file");
+        records = await parseCSV(batch.storagePath);
+        break;
+      case "xlsx":
+        console.log("📊 Parsing Excel file");
+        records = await parseXLSX(batch.storagePath);
+        break;
+      case "txt":
+        console.log("📊 Parsing text file");
+        records = await parseTXT(batch.storagePath);
+        break;
+      default:
+        throw new Error(`Unsupported file type: ${batch.fileType}`);
+    }
+
+    console.log(`✅ Parsed ${records.length} records from file`);
+
+    // Process records
+    await processRecords(batch, records);
+
+    // Enqueue email verification
+    console.log(`📨 Enqueuing email verification for batch ${batch.id}...`);
+    await enqueueEmailVerification(batch.id);
+    console.log(`✅ Email verification enqueued for batch ${batch.id}`);
+  } catch (error) {
+    console.error(`❌ Processing error for batch ${batchId}:`, error);
+
+    if (batch) {
+      await batch.update({
+        status: "failed",
+        errorReason: error.message,
+      });
+    }
+
+    // Clean up file
+    try {
+      if (batch?.storagePath && fs.existsSync(batch.storagePath)) {
+        fs.unlinkSync(batch.storagePath);
+        console.log(`🧹 Cleaned up file: ${batch.storagePath}`);
+      }
+    } catch (cleanupError) {
+      console.error("Failed to clean up file:", cleanupError);
+    }
+  }
 };
 
 // Process and deduplicate records
 const processRecords = async (batch, records) => {
-  const batchRecords = [];
-  let duplicateCount = 0;
-  let validCount = 0;
-  let failedCount = 0;
+  console.log(`🔄 Processing ${records.length} records for batch ${batch.id}`);
 
-  console.log(`Processing ${records.length} records...`);
+  const batchRecords = [];
+  let validCount = 0;
+  let duplicateCount = 0;
+  let failedCount = 0;
 
   for (let i = 0; i < records.length; i++) {
     const record = records[i];
     let emailValue = null;
-    
+
     try {
-      if (!record || typeof record !== 'object') {
-        throw new Error(`Invalid record format at index ${i}`);
+      if (!record || typeof record !== "object") {
+        throw new Error("Invalid record format");
       }
 
-      console.log(`Processing record ${i + 1}:`, Object.keys(record));
-      
       // Find email field
       emailValue = findEmailField(record);
       if (!emailValue) {
-        throw new Error(`No email field found. Available fields: ${Object.keys(record).join(', ')}`);
+        throw new Error("No email field found");
       }
 
-      console.log(`Found email: ${emailValue}`);
-      
-      // Validate email format before normalization
+      // Validate email
       if (!isValidEmail(emailValue)) {
         throw new Error(`Invalid email format: ${emailValue}`);
       }
-      
+
       // Normalize email
       const normalizedEmail = normalizeEmail(emailValue);
       if (!normalizedEmail) {
         throw new Error(`Could not normalize email: ${emailValue}`);
       }
 
-      // Extract domain for additional checks
+      // Extract domain
       const domain = extractDomain(normalizedEmail);
       if (!domain) {
-        throw new Error(`Could not extract domain from: ${normalizedEmail}`);
+        throw new Error(`Could not extract domain: ${normalizedEmail}`);
       }
 
-      // Check for duplicates in global registry
+      // Check/update global registry
       const [globalRecord, created] = await GlobalEmailRegistry.findOrCreate({
         where: { normalizedEmail },
         defaults: {
           domain,
           emailProvider: getEmailProvider(domain),
           firstSeenAt: new Date(),
-          lastSeenAt: new Date()
-        }
+          lastSeenAt: new Date(),
+        },
       });
 
-      // Update lastSeenAt for existing records
+      // Update existing record
       if (!created) {
-        await globalRecord.update({ 
+        await globalRecord.update({
           lastSeenAt: new Date(),
-          emailProvider: getEmailProvider(domain) // Update provider if changed
+          emailProvider: getEmailProvider(domain),
         });
+        duplicateCount++;
+      } else {
+        validCount++;
       }
 
       // Find name
       const name = findNameField(record);
-      
-      // Prepare metadata (exclude email and name fields)
+
+      // Prepare metadata
       const metadata = { ...record };
-      Object.keys(metadata).forEach(key => {
+      Object.keys(metadata).forEach((key) => {
         const lowerKey = key.toLowerCase();
-        if (lowerKey.includes('email') || lowerKey.includes('name')) {
+        if (lowerKey.includes("email") || lowerKey.includes("name")) {
           delete metadata[key];
         }
       });
 
-      // Clean up metadata (remove undefined/null values)
-      Object.keys(metadata).forEach(key => {
-        if (metadata[key] === undefined || metadata[key] === null || metadata[key] === '') {
+      // Clean metadata
+      Object.keys(metadata).forEach((key) => {
+        if (
+          metadata[key] === undefined ||
+          metadata[key] === null ||
+          metadata[key] === ""
+        ) {
           delete metadata[key];
         }
       });
 
-      // Prepare record for batch
+      // Prepare batch record
       batchRecords.push({
         batchId: batch.id,
         rawEmail: emailValue,
@@ -355,52 +452,50 @@ const processRecords = async (batch, records) => {
         name: name || null,
         metadata: Object.keys(metadata).length > 0 ? metadata : null,
         status: created ? "parsed" : "duplicate",
-        failureReason: created ? null : "Duplicate in global registry",
-        createdAt: new Date()
+        failureReason: null,
       });
-
-      validCount++;
-      if (!created) duplicateCount++;
-      
-      console.log(`Record ${i + 1} processed successfully: ${created ? 'New' : 'Duplicate'}`);
-
     } catch (error) {
-      console.log(`Record ${i + 1} failed: ${error.message}`);
+      failedCount++;
       batchRecords.push({
         batchId: batch.id,
-        rawEmail: emailValue || JSON.stringify(record),
+        rawEmail: emailValue || JSON.stringify(record).substring(0, 255),
         normalizedEmail: null,
         domain: null,
         name: null,
-        metadata: { 
-          rawData: record, 
+        metadata: {
+          rawData: record,
           error: error.message,
-          availableFields: Object.keys(record || {})
         },
         status: "invalid",
         failureReason: error.message,
-        createdAt: new Date()
       });
-      failedCount++;
+    }
+
+    // Progress logging
+    if ((i + 1) % 100 === 0 || i === records.length - 1) {
+      console.log(`📊 Processed ${i + 1}/${records.length} records`);
     }
   }
 
   // Bulk insert records
   if (batchRecords.length > 0) {
     try {
+      console.log(
+        `💾 Inserting ${batchRecords.length} records into database...`
+      );
       await ListUploadRecord.bulkCreate(batchRecords, {
         validate: true,
-        ignoreDuplicates: true
+        ignoreDuplicates: true,
       });
-      console.log(`Inserted ${batchRecords.length} records into database`);
+      console.log(`✅ Inserted ${batchRecords.length} records`);
     } catch (dbError) {
-      console.error('Database insert error:', dbError);
-      // Try inserting one by one
+      console.error("Bulk insert failed, trying one by one:", dbError);
+      // Fallback to individual inserts
       for (const record of batchRecords) {
         try {
           await ListUploadRecord.create(record);
         } catch (singleError) {
-          console.error('Failed to insert single record:', singleError);
+          console.error("Failed to insert single record:", singleError);
         }
       }
     }
@@ -408,24 +503,28 @@ const processRecords = async (batch, records) => {
 
   // Update batch statistics
   await batch.update({
+    status: "completed",
     totalRecords: records.length,
     validRecords: validCount,
     duplicateRecords: duplicateCount,
     failedRecords: failedCount,
-    status: "completed",
-    updatedAt: new Date()
+    processedAt: new Date(),
   });
 
-  console.log(`Processing complete. Valid: ${validCount}, Duplicates: ${duplicateCount}, Failed: ${failedCount}`);
-  
-  // Clean up the uploaded file after processing
+  console.log(`✅ Processing complete for batch ${batch.id}`);
+  console.log(`   Total: ${records.length}`);
+  console.log(`   Valid: ${validCount}`);
+  console.log(`   Duplicates: ${duplicateCount}`);
+  console.log(`   Failed: ${failedCount}`);
+
+  // Clean up file after successful processing
   try {
     if (batch.storagePath && fs.existsSync(batch.storagePath)) {
       fs.unlinkSync(batch.storagePath);
-      console.log(`Cleaned up file: ${batch.storagePath}`);
+      console.log(`🧹 Cleaned up processed file: ${batch.storagePath}`);
     }
   } catch (cleanupError) {
-    console.error('Failed to clean up file:', cleanupError);
+    console.error("Failed to clean up file:", cleanupError);
   }
 };
 
@@ -434,38 +533,45 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
   const batch = await ListUploadBatch.findOne({
     where: {
       id: req.params.batchId,
-      userId: req.user.id
-    }
+      userId: req.user.id,
+    },
   });
 
   if (!batch) {
-    return res.status(404).json({ 
+    return res.status(404).json({
       success: false,
-      message: "Batch not found" 
+      message: "Batch not found",
     });
   }
 
-  // Get record counts by status
+  // Get record counts
   const counts = await ListUploadRecord.findAll({
     attributes: [
-      'status',
-      [sequelize.fn('COUNT', sequelize.col('id')), 'count']
+      "status",
+      [sequelize.fn("COUNT", sequelize.col("id")), "count"],
     ],
     where: { batchId: batch.id },
-    group: ['status']
+    group: ["status"],
   });
 
   const countsMap = {};
-  counts.forEach(item => {
+  counts.forEach((item) => {
     countsMap[item.status] = parseInt(item.dataValues.count);
   });
 
   // Get sample records
   const sampleRecords = await ListUploadRecord.findAll({
     where: { batchId: batch.id },
-    attributes: ['id', 'status', 'normalizedEmail', 'name', 'failureReason', 'createdAt'],
-    order: [['createdAt', 'DESC']],
-    limit: 10
+    attributes: [
+      "id",
+      "status",
+      "normalizedEmail",
+      "name",
+      "failureReason",
+      "createdAt",
+    ],
+    order: [["createdAt", "DESC"]],
+    limit: 10,
   });
 
   res.json({
@@ -483,18 +589,18 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
         checksum: batch.checksum,
         errorReason: batch.errorReason,
         createdAt: batch.createdAt,
-        updatedAt: batch.updatedAt
+        updatedAt: batch.updatedAt,
       },
       counts: countsMap,
-      sampleRecords: sampleRecords.map(record => ({
+      sampleRecords: sampleRecords.map((record) => ({
         id: record.id,
         status: record.status,
         email: record.normalizedEmail,
         name: record.name,
         failureReason: record.failureReason,
-        createdAt: record.createdAt
-      }))
-    }
+        createdAt: record.createdAt,
+      })),
+    },
   });
 });
 
@@ -506,21 +612,21 @@ export const getUserBatches = asyncHandler(async (req, res) => {
 
   const { count, rows: batches } = await ListUploadBatch.findAndCountAll({
     where: { userId: req.user.id },
-    order: [['createdAt', 'DESC']],
+    order: [["createdAt", "DESC"]],
     limit,
     offset,
     attributes: [
-      'id',
-      'originalFilename',
-      'fileType',
-      'status',
-      'totalRecords',
-      'validRecords',
-      'duplicateRecords',
-      'failedRecords',
-      'createdAt',
-      'updatedAt'
-    ]
+      "id",
+      "originalFilename",
+      "fileType",
+      "status",
+      "totalRecords",
+      "validRecords",
+      "duplicateRecords",
+      "failedRecords",
+      "createdAt",
+      "updatedAt",
+    ],
   });
 
   res.status(200).json({
@@ -530,7 +636,7 @@ export const getUserBatches = asyncHandler(async (req, res) => {
       page,
       limit,
       total: count,
-      pages: Math.ceil(count / limit)
-    }
+      pages: Math.ceil(count / limit),
+    },
   });
 });

@@ -18,6 +18,35 @@ const GlobalEmailRegistry = sequelize.define(
 
     domain: DataTypes.STRING,
 
+    /* =========================
+       VERIFICATION FIELDS
+    ========================= */
+
+    verificationStatus: {
+      type: DataTypes.ENUM("valid", "invalid", "risky", "unknown", "verifying"),
+      defaultValue: "unknown",
+    },
+
+    verificationScore: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+
+    verificationProvider: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+
+    verifiedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
+    verificationMeta: {
+      type: DataTypes.JSONB,
+      defaultValue: {},
+    },
+
     firstSeenAt: {
       type: DataTypes.DATE,
       defaultValue: DataTypes.NOW,
@@ -28,7 +57,11 @@ const GlobalEmailRegistry = sequelize.define(
   {
     tableName: "global_email_registry",
     timestamps: false,
-    indexes: [{ unique: true, fields: ["normalizedEmail"] }],
+    indexes: [
+      { unique: true, fields: ["normalizedEmail"] },
+      { fields: ["verificationStatus"] },
+      { fields: ["verifiedAt"] },
+    ],
   }
 );
 
