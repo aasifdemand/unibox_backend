@@ -1,3 +1,4 @@
+// models/list-upload-batch.model.js
 import { DataTypes } from "sequelize";
 import sequelize from "../config/db.js";
 
@@ -28,12 +29,16 @@ const ListUploadBatch = sequelize.define(
       allowNull: false,
     },
 
+    // Updated status enum to include verification statuses
     status: {
       type: DataTypes.ENUM(
         "uploaded",
         "parsing",
         "deduping",
         "queued",
+        "verifying", // Added this
+        "verified", // Added this
+        "verification_failed", // Added this
         "completed",
         "failed"
       ),
@@ -44,6 +49,32 @@ const ListUploadBatch = sequelize.define(
     validRecords: DataTypes.INTEGER,
     duplicateRecords: DataTypes.INTEGER,
     failedRecords: DataTypes.INTEGER,
+
+    // Add verification tracking fields
+    verifiedCount: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
+
+    failedVerificationCount: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
+
+    verificationStartedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
+    verificationCompletedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
+    verificationError: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
 
     checksum: {
       type: DataTypes.STRING,

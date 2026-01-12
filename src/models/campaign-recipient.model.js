@@ -35,6 +35,11 @@ const CampaignRecipient = sequelize.define(
       defaultValue: 0,
     },
 
+    nextRunAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      index: true,
+    },
     status: {
       type: DataTypes.ENUM(
         "pending",
@@ -51,8 +56,7 @@ const CampaignRecipient = sequelize.define(
     repliedAt: {
       type: DataTypes.DATE,
       allowNull: true,
-    }
-
+    },
   },
   {
     tableName: "campaign_recipients",

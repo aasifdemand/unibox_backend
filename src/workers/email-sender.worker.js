@@ -13,6 +13,9 @@ import { getChannel } from "../queues/rabbitmq.js";
 import { QUEUES } from "../queues/queues.js";
 import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
 
+import { mtaDetectorCache } from "../services/mta-detector-cache.service.js";
+import { EmailProvider } from "../enums/email-provider.enum.js";
+
 /* =========================
    LOGGER
 ========================= */
@@ -33,16 +36,29 @@ const log = (level, message, meta = {}) =>
 function generateMessageId(emailId, domain) {
   const ts = Date.now();
   const uid = randomUUID().split("-")[0];
-  const messageId = `<${emailId}.${uid}.${ts}@${domain}>`;
+  return `<${emailId}.${uid}.${ts}@${domain}>`;
+}
 
-  log("DEBUG", "Generated Message-ID", {
-    emailId,
-    domain,
-    messageId,
-    length: messageId.length,
-  });
+/* =========================
+   PROVIDER RULES
+========================= */
+function applyProviderRules(provider) {
+  switch (provider) {
+    case EmailProvider.GOOGLE:
+      return { tlsRequired: true };
 
-  return messageId;
+    case EmailProvider.MICROSOFT:
+      return { tlsRequired: true };
+
+    case EmailProvider.PROTON:
+      return { tlsRequired: true };
+
+    case EmailProvider.SELF_HOSTED:
+      return { tlsRequired: false };
+
+    default:
+      return { tlsRequired: false };
+  }
 }
 
 /* =========================
@@ -53,48 +69,22 @@ function generateMessageId(emailId, domain) {
     log("INFO", "🚀 Email Sender starting...");
 
     const channel = await getChannel();
-    log("INFO", "✅ RabbitMQ channel connected");
-
     await channel.assertQueue(QUEUES.EMAIL_SEND, { durable: true });
-    log("INFO", `✅ Queue ${QUEUES.EMAIL_SEND} asserted`);
-
     channel.prefetch(5);
-    log("INFO", "🔄 Prefetch set to 5");
 
-    log("INFO", "📧 Email Sender ready to process messages");
+    log("INFO", "📧 Email Sender ready");
 
     channel.consume(QUEUES.EMAIL_SEND, async (msg) => {
-      if (!msg) {
-        log("WARN", "Received null message from queue");
-        return;
-      }
+      if (!msg) return;
 
       let emailId;
-      let messageHeaders = {};
+      let headers = {};
 
       try {
-        const messageContent = msg.content.toString();
-        log("DEBUG", "📥 Received message from queue", {
-          queue: QUEUES.EMAIL_SEND,
-          messageSize: messageContent.length,
-          headers: msg.properties.headers,
-        });
-
-        const parsed = JSON.parse(messageContent);
+        const parsed = JSON.parse(msg.content.toString());
         emailId = parsed.emailId;
-        messageHeaders = msg.properties.headers || {};
-
-        log("INFO", "🔍 Processing email send request", {
-          emailId,
-          processingId: messageHeaders["processing-id"] || "unknown",
-          campaignId: messageHeaders["campaign-id"] || "unknown",
-          recipientId: messageHeaders["recipient-id"] || "unknown",
-        });
-      } catch (parseErr) {
-        log("ERROR", "❌ Failed to parse message", {
-          error: parseErr.message,
-          content: msg.content.toString().substring(0, 200),
-        });
+        headers = msg.properties.headers || {};
+      } catch {
         channel.ack(msg);
         return;
       }
@@ -103,84 +93,62 @@ function generateMessageId(emailId, domain) {
       let sender;
 
       try {
-        // Fetch email record
-        log("DEBUG", "📋 Fetching email record", { emailId });
-
         email = await Email.findByPk(emailId);
-        if (!email) {
-          log("WARN", "❌ Email record not found", { emailId });
+        if (!email || email.status === "sent") {
           channel.ack(msg);
           return;
         }
-
-        log("DEBUG", "✅ Found email record", {
-          emailId,
-          status: email.status,
-          recipientEmail: email.recipientEmail,
-          senderId: email.senderId,
-          campaignId: email.campaignId,
-        });
-
-        if (email.status === "sent") {
-          log("INFO", "⏭️ Email already sent", {
-            emailId,
-            sentAt: email.sentAt,
-            providerMessageId: email.providerMessageId?.substring(0, 50),
-          });
-          channel.ack(msg);
-          return;
-        }
-
-        // Fetch sender configuration
-        log("DEBUG", "📋 Fetching sender configuration", {
-          senderId: email.senderId,
-        });
 
         sender = await Sender.findByPk(email.senderId);
-        if (!sender) {
-          throw new Error(`Sender not found: ${email.senderId}`);
+        if (!sender) throw new Error("Sender not found");
+
+        /* =========================
+           MTA DETECTION (SAFE)
+        ========================= */
+        const recipientDomain = email.recipientEmail.split("@")[1];
+
+        let mtaInfo = {
+          provider: EmailProvider.UNKNOWN,
+          confidence: "weak",
+        };
+
+        try {
+          mtaInfo = await mtaDetectorCache.detect(email.recipientEmail);
+        } catch (e) {
+          log("WARN", "MTA detection failed, using fallback", {
+            emailId,
+            domain: recipientDomain,
+            error: e.message,
+          });
         }
 
-        log("DEBUG", "✅ Found sender configuration", {
-          senderId: sender.id,
-          email: sender.email,
-          provider: sender.provider,
-          displayName: sender.displayName,
-          hasSmtpConfig: !!(
-            sender.smtpHost &&
-            sender.smtpUser &&
-            sender.smtpPass
-          ),
+        const providerRules = applyProviderRules(mtaInfo.provider);
+
+        log("INFO", "📡 Delivery provider resolved", {
+          emailId,
+          recipientDomain,
+          provider: mtaInfo.provider,
+          confidence: mtaInfo.confidence,
+          score: mtaInfo.score,
         });
 
-        // Create queued event
         await EmailEvent.create({
           emailId,
           eventType: "queued",
           eventTimestamp: new Date(),
-          metadata: { queue: QUEUES.EMAIL_SEND },
         });
 
-        const domain = sender.email.split("@")[1];
-        const messageId = generateMessageId(emailId, domain);
+        const messageId = generateMessageId(
+          emailId,
+          sender.email.split("@")[1]
+        );
         let providerMessageId;
 
         /* =========================
-           OUTLOOK (GRAPH API)
+           MICROSOFT GRAPH
         ========================= */
         if (sender.provider === "outlook") {
-          log("INFO", "🔵 Sending via Microsoft Graph API", {
-            emailId,
-            provider: "outlook",
-            senderEmail: sender.email,
-          });
-
           const token = await getValidMicrosoftToken(sender);
-
-          log("DEBUG", "✅ Microsoft token obtained", {
-            emailId,
-            tokenLength: token.length,
-          });
 
           const res = await fetch(
             "https://graph.microsoft.com/v1.0/me/sendMail",
@@ -208,31 +176,14 @@ function generateMessageId(emailId, domain) {
           );
 
           if (!res.ok) {
-            const errorText = await res.text();
-            throw new Error(
-              `Microsoft Graph API error: ${res.status} - ${errorText}`
-            );
+            throw new Error(`Graph API failed (${res.status})`);
           }
 
           providerMessageId = messageId;
-
-          log("INFO", "✅ Email sent via Microsoft Graph API", {
-            emailId,
-            recipientEmail: email.recipientEmail,
-            messageId: messageId.substring(0, 50) + "...",
-          });
         } else {
           /* =========================
-             SMTP (GMAIL / CUSTOM)
+             SMTP
           ========================= */
-          log("INFO", "🔵 Sending via SMTP", {
-            emailId,
-            provider: sender.provider,
-            smtpHost: sender.smtpHost,
-            smtpPort: sender.smtpPort,
-            senderEmail: sender.email,
-          });
-
           const transporter = nodemailer.createTransport({
             host: sender.smtpHost,
             port: sender.smtpPort,
@@ -242,65 +193,30 @@ function generateMessageId(emailId, domain) {
               pass: sender.smtpPass,
             },
             tls: {
-              rejectUnauthorized: false,
-              ciphers: "SSLv3",
+              rejectUnauthorized: providerRules.tlsRequired,
             },
-            logger: false, // Disable nodemailer's internal logging
-            debug: false,
           });
 
-          const mailOptions = {
+          await transporter.sendMail({
             from: `"${sender.displayName}" <${sender.email}>`,
             to: email.recipientEmail,
             subject: email.metadata.subject,
             html: email.metadata.htmlBody,
             messageId,
-            headers: {
-              "Message-ID": messageId,
-              "X-Unibox-Email-ID": emailId,
-              "X-Unibox-Campaign-ID": email.campaignId,
-              "List-Unsubscribe": `<mailto:${sender.email}?subject=unsubscribe-${emailId}>`,
-              References: messageId,
-              "In-Reply-To": messageId,
-              Precedence: "bulk",
-            },
-          };
-
-          log("DEBUG", "📤 SMTP mail options prepared", {
-            emailId,
-            from: mailOptions.from,
-            to: mailOptions.to,
-            subjectLength: email.metadata.subject?.length || 0,
-            htmlLength: email.metadata.htmlBody?.length || 0,
           });
-
-          const result = await transporter.sendMail(mailOptions);
 
           providerMessageId = messageId;
-
-          log("INFO", "✅ Email sent via SMTP", {
-            emailId,
-            recipientEmail: email.recipientEmail,
-            messageId: messageId.substring(0, 50) + "...",
-            response: result.response?.substring(0, 100),
-          });
         }
 
         /* =========================
-           DATABASE UPDATES
+           FINAL UPDATES
         ========================= */
-        log("INFO", "💾 Updating database records", { emailId });
-
         await email.update({
           status: "sent",
           providerMessageId,
           sentAt: new Date(),
-        });
-
-        log("DEBUG", "✅ Email record updated", {
-          emailId,
-          newStatus: "sent",
-          sentAt: new Date().toISOString(),
+          deliveryProvider: mtaInfo.provider,
+          deliveryConfidence: mtaInfo.confidence,
         });
 
         await CampaignSend.update(
@@ -308,50 +224,34 @@ function generateMessageId(emailId, domain) {
           { where: { emailId } }
         );
 
-        log("DEBUG", "✅ CampaignSend record updated", { emailId });
-
         await EmailEvent.create({
           emailId,
           eventType: "sent",
           eventTimestamp: new Date(),
           metadata: {
-            providerMessageId,
-            provider: sender.provider,
-            deliveryMethod:
-              sender.provider === "outlook" ? "graph_api" : "smtp",
+            provider: mtaInfo.provider,
+            confidence: mtaInfo.confidence,
           },
         });
 
-        log("INFO", "🎉 Email sent successfully", {
+        log("INFO", "✅ Email sent", {
           emailId,
-          recipientEmail: email.recipientEmail,
-          senderId: sender.id,
-          provider: sender.provider,
-          providerMessageId: providerMessageId?.substring(0, 50) + "...",
-          processingId: messageHeaders["processing-id"] || "unknown",
-          durationMs: Date.now() - new Date(msg.properties.timestamp).getTime(),
+          recipient: email.recipientEmail,
+          provider: mtaInfo.provider,
         });
 
         channel.ack(msg);
       } catch (err) {
         log("ERROR", "❌ Email send failed", {
           emailId,
-          recipientEmail: email?.recipientEmail,
-          senderId: sender?.id,
-          provider: sender?.provider,
           error: err.message,
-          stack: err.stack,
-          processingId: messageHeaders["processing-id"] || "unknown",
         });
 
-        // Update failed status in database
         if (email) {
           await email.update({
             status: "failed",
             lastError: err.message.substring(0, 500),
           });
-
-          log("DEBUG", "📝 Email marked as failed", { emailId });
         }
 
         await CampaignSend.update(
@@ -364,63 +264,29 @@ function generateMessageId(emailId, domain) {
           bounceType: "hard",
           reason: err.message.substring(0, 500),
           occurredAt: new Date(),
-          metadata: {
-            provider: sender?.provider,
-            senderId: sender?.id,
-            errorDetails: err.stack?.split("\n")[0],
-          },
         });
 
-        log("DEBUG", "✅ Bounce event created", { emailId });
+        await CampaignRecipient.update(
+          { status: "bounced", bounceReason: err.message.substring(0, 200) },
+          {
+            where: {
+              email: email?.recipientEmail,
+              campaignId: email?.campaignId,
+            },
+          }
+        );
 
-        if (email?.recipientEmail && email?.campaignId) {
-          await CampaignRecipient.update(
-            { status: "bounced", bounceReason: err.message.substring(0, 200) },
-            {
-              where: {
-                email: email.recipientEmail,
-                campaignId: email.campaignId,
-              },
-            }
-          );
-
-          log("INFO", "⏹️ Recipient marked as bounced", {
-            emailId,
-            recipientEmail: email.recipientEmail,
-            campaignId: email.campaignId,
-          });
-        }
-
-        channel.ack(msg); // Don't retry failed sends
+        channel.ack(msg);
       }
     });
 
-    // Channel event handlers
     channel.on("close", () => {
-      log("ERROR", "🔌 RabbitMQ channel closed unexpectedly");
+      log("ERROR", "RabbitMQ channel closed");
       process.exit(1);
     });
-
-    channel.on("error", (err) => {
-      log("ERROR", "⚡ RabbitMQ channel error", {
-        error: err.message,
-        stack: err.stack,
-      });
-    });
-
-    channel.on("blocked", (reason) => {
-      log("WARN", "🚫 RabbitMQ channel blocked", { reason });
-    });
-
-    channel.on("unblocked", () => {
-      log("INFO", "✅ RabbitMQ channel unblocked");
-    });
-
-    log("INFO", "✅ Email Sender started successfully");
   } catch (err) {
-    log("ERROR", "💥 Failed to start Email Sender", {
+    log("ERROR", "Email Sender failed to start", {
       error: err.message,
-      stack: err.stack,
     });
     process.exit(1);
   }

@@ -1,6 +1,6 @@
 import express from "express";
 import cookieParser from "cookie-parser";
-import passport from "passport" 
+import passport from "passport";
 import "./config/passport-google.config.js";
 import "./config/passport-microsoft.config.js";
 import swaggerUi from "swagger-ui-express";
@@ -10,7 +10,8 @@ import userRoutes from "./routes/user.routes.js";
 import listUploadRoutes from "./routes/list-upload.route.js";
 import campaignRoutes from "./routes/campaign.route.js";
 import senderRoutes from "./routes/sender.routes.js";
-import analyticsRoutes from "./routes/analytics.routes.js"
+import MTADetectorRoutes from "./routes/mta-detector.route.js";
+import analyticsRoutes from "./routes/analytics.routes.js";
 import { responseMiddleware } from "./middlewares/response.middleware.js";
 import errorHandler from "./middlewares/error.middleware.js";
 import path from "path";
@@ -47,10 +48,11 @@ app.get("/profile.html", protect, (req, res) => {
 // routes
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/users", userRoutes);
-app.use("/api/v1/lists", listUploadRoutes)
-app.use("/api/v1/senders",senderRoutes)
-app.use("/api/v1/campaigns",campaignRoutes)
-app.use("/api/v1/analytics", analyticsRoutes)
+app.use("/api/v1/lists", listUploadRoutes);
+app.use("/api/v1/senders", senderRoutes);
+app.use("/api/v1/campaigns", campaignRoutes);
+app.use("/api/v1/analytics", analyticsRoutes);
+app.use("/api/v1/mta-detector", MTADetectorRoutes);
 
 // swagger
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));

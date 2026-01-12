@@ -20,9 +20,18 @@ const CampaignStep = sequelize.define(
       allowNull: false,
     },
 
-    templateId: {
-      type: DataTypes.UUID,
+    subject: {
+      type: DataTypes.STRING,
       allowNull: false,
+    },
+
+    htmlBody: {
+      type: DataTypes.TEXT,
+      allowNull: false,
+    },
+
+    textBody: {
+      type: DataTypes.TEXT,
     },
 
     delayMinutes: {

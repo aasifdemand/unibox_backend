@@ -7,7 +7,6 @@ import { publishCampaignTick } from "../queues/campaign.queue.js";
 import AppError from "../utils/app-error.js";
 import ListUploadBatch from "../models/list-upload-batch.model.js";
 
-
 export const createCampaign = asyncHandler(async (req, res) => {
   const {
     name,
@@ -25,14 +24,13 @@ export const createCampaign = asyncHandler(async (req, res) => {
     throw new AppError("Missing required fields", 400);
   }
 
- 
-  
-
   const batch = await ListUploadBatch.findOne({
     where: { id: listBatchId, userId: req.user.id },
   });
 
-  if (!batch || batch.status !== "completed") {
+  console.log("batch: ", batch);
+
+  if (!batch || batch.status !== "verified") {
     throw new AppError("List batch not ready", 400);
   }
 
@@ -111,19 +109,21 @@ export const activateCampaign = asyncHandler(async (req, res) => {
   });
 
   // Log the materialization
-  console.log(`📊 Materialized ${recipients.length} recipients for campaign ${campaign.id}`);
+  console.log(
+    `📊 Materialized ${recipients.length} recipients for campaign ${campaign.id}`
+  );
 
   // kick scheduler
   await publishCampaignTick(campaign.id);
 
-  res.json({ 
-    success: true, 
+  res.json({
+    success: true,
     message: "Campaign activated",
     data: {
       campaignId: campaign.id,
       recipientsCount: recipients.length,
-      materializedAt: new Date().toISOString()
-    }
+      materializedAt: new Date().toISOString(),
+    },
   });
 });
 
