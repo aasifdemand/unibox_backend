@@ -5,28 +5,35 @@ import {
   ConfidenceLevel,
 } from "../enums/email-provider.enum.js";
 
-const SMTP_TIMEOUT_MS = 4000;
+const SMTP_TIMEOUT_MS = 3500;
 
+/**
+ * Weighted signal model:
+ * - MX patterns: 0.6
+ * - SMTP banner: 0.3
+ * - Fallback heuristic: 0.1
+ */
 class MTADetector {
   constructor() {
-    this.cache = new Map();
-    this.cacheTTL = 60 * 60 * 1000;
-
     /* =========================
-       MX PATTERN SIGNALS
+       MX SIGNAL PATTERNS
     ========================= */
     this.mxPatterns = {
       [EmailProvider.GOOGLE]: [/aspmx/i, /\.google\.com$/i],
       [EmailProvider.MICROSOFT]: [/\.mail\.protection\.outlook\.com$/i],
-      [EmailProvider.ZOHO]: [/\.zoho\.com$/i, /\.zmx\.com$/i],
-      [EmailProvider.PROTON]: [/\.protonmail/i],
+      [EmailProvider.YAHOO]: [/\.yahoodns\.net$/i],
+      [EmailProvider.APPLE]: [/\.icloud\.com$/i],
+      [EmailProvider.ZOHO]: [/\.zoho\.com$/i],
+      [EmailProvider.PROTON]: [/\.protonmail\./i],
+
+      // Security gateways (highest priority)
       [EmailProvider.PROOFPOINT]: [/proofpoint/i],
       [EmailProvider.MIMECAST]: [/mimecast/i],
       [EmailProvider.BARRACUDA]: [/barracuda/i],
     };
 
     /* =========================
-       SMTP BANNER SIGNALS
+       SMTP BANNER PATTERNS
     ========================= */
     this.smtpPatterns = {
       [EmailProvider.GOOGLE]: [/google/i],
@@ -34,40 +41,32 @@ class MTADetector {
       [EmailProvider.PROOFPOINT]: [/proofpoint/i],
       [EmailProvider.MIMECAST]: [/mimecast/i],
       [EmailProvider.BARRACUDA]: [/barracuda/i],
+      [EmailProvider.ZOHO]: [/zoho/i],
+      [EmailProvider.PROTON]: [/proton/i],
     };
   }
 
-  extractDomain(email) {
-    if (!email.includes("@")) {
-      throw new Error("Invalid email");
+  extractDomain(emailOrDomain) {
+    if (emailOrDomain.includes("@")) {
+      return emailOrDomain.split("@")[1].toLowerCase().trim();
     }
-    return email.split("@")[1].toLowerCase().trim();
+    return emailOrDomain.toLowerCase().trim();
   }
 
-  async detect(email) {
-    const domain = this.extractDomain(email);
-    const cacheKey = `mta:${domain}`;
-
-    const cached = this.cache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < this.cacheTTL) {
-      return cached.data;
-    }
-
-    const result = await this.performDetection(domain);
-
-    this.cache.set(cacheKey, { data: result, ts: Date.now() });
-    return result;
+  /* =========================
+     PUBLIC API
+  ========================= */
+  async detect(emailOrDomain) {
+    const domain = this.extractDomain(emailOrDomain);
+    return this._detectDomain(domain);
   }
 
   /* =========================
      CORE DETECTION
   ========================= */
-  async performDetection(domain) {
+  async _detectDomain(domain) {
     const scores = {};
-    const signals = {
-      mx: [],
-      smtp: null,
-    };
+    const signals = { mx: [], smtp: null };
 
     Object.values(EmailProvider).forEach((p) => (scores[p] = 0));
 
@@ -76,14 +75,16 @@ class MTADetector {
     try {
       mxRecords = await dns.resolveMx(domain);
       mxRecords.sort((a, b) => a.priority - b.priority);
-    } catch (_) {}
+    } catch {
+      return this._finalize(domain, EmailProvider.UNKNOWN, 0, signals);
+    }
 
-    signals.mx = mxRecords.map((r) => ({
-      exchange: r.exchange,
-      priority: r.priority,
+    signals.mx = mxRecords.map((m) => ({
+      exchange: m.exchange,
+      priority: m.priority,
     }));
 
-    /* MX PATTERN WEIGHT: 0.6 */
+    /* ---------- MX WEIGHT (0.6) ---------- */
     for (const mx of mxRecords) {
       const host = mx.exchange.toLowerCase();
       for (const [provider, patterns] of Object.entries(this.mxPatterns)) {
@@ -93,49 +94,44 @@ class MTADetector {
       }
     }
 
-    /* ---------- SMTP PROBE (fallback) ---------- */
-    if (mxRecords.length) {
-      const banner = await this.probeSMTP(mxRecords[0].exchange);
-      signals.smtp = banner;
+    /* ---------- SMTP PROBE (0.3, best MX only) ---------- */
+    const banner = await this._probeSMTP(mxRecords[0].exchange);
+    signals.smtp = banner;
 
-      if (banner) {
-        for (const [provider, patterns] of Object.entries(this.smtpPatterns)) {
-          if (patterns.some((p) => p.test(banner))) {
-            scores[provider] += 0.3;
-          }
+    if (banner) {
+      for (const [provider, patterns] of Object.entries(this.smtpPatterns)) {
+        if (patterns.some((p) => p.test(banner))) {
+          scores[provider] += 0.3;
         }
       }
     }
 
-    /* ---------- NORMALIZE ---------- */
-    const entries = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-    const [winner, rawScore] = entries[0];
+    /* ---------- MULTI-MX CONSISTENCY BOOST (0.1) ---------- */
+    const uniqueProviders = Object.entries(scores)
+      .filter(([, s]) => s >= 0.6)
+      .map(([p]) => p);
 
-    const score = Math.min(1, Number(rawScore.toFixed(3)));
+    if (uniqueProviders.length === 1) {
+      scores[uniqueProviders[0]] += 0.1;
+    }
 
-    const confidence =
-      score >= 0.9
-        ? ConfidenceLevel.HIGH
-        : score >= 0.7
-        ? ConfidenceLevel.MEDIUM
-        : score >= 0.5
-        ? ConfidenceLevel.LOW
-        : ConfidenceLevel.WEAK;
+    /* ---------- SELECT WINNER ---------- */
+    const [winner, score] = Object.entries(scores).sort(
+      (a, b) => b[1] - a[1]
+    )[0];
 
-    return {
-      domain,
-      provider: score === 0 ? EmailProvider.UNKNOWN : winner,
-      confidence,
-      score,
-      signals,
-      detectedAt: new Date().toISOString(),
-    };
+    /* ---------- SELF-HOSTED HEURISTIC ---------- */
+    if (score === 0 && mxRecords.length) {
+      return this._finalize(domain, EmailProvider.SELF_HOSTED, 0.4, signals);
+    }
+
+    return this._finalize(domain, winner, score, signals);
   }
 
   /* =========================
-     SAFE SMTP BANNER PROBE
+     SMTP SAFE PROBE
   ========================= */
-  async probeSMTP(host) {
+  async _probeSMTP(host) {
     return new Promise((resolve) => {
       const socket = net.createConnection(25, host);
       socket.setTimeout(SMTP_TIMEOUT_MS);
@@ -152,6 +148,31 @@ class MTADetector {
 
       socket.on("error", () => resolve(null));
     });
+  }
+
+  /* =========================
+     NORMALIZATION
+  ========================= */
+  _finalize(domain, provider, score, signals) {
+    const normalizedScore = Math.min(1, Number(score.toFixed(2)));
+
+    const confidence =
+      normalizedScore >= 0.9
+        ? ConfidenceLevel.HIGH
+        : normalizedScore >= 0.75
+        ? ConfidenceLevel.MEDIUM
+        : normalizedScore >= 0.5
+        ? ConfidenceLevel.LOW
+        : ConfidenceLevel.WEAK;
+
+    return {
+      domain,
+      provider: normalizedScore === 0 ? EmailProvider.UNKNOWN : provider,
+      confidence,
+      score: normalizedScore,
+      signals,
+      detectedAt: new Date().toISOString(),
+    };
   }
 }
 

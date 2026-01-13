@@ -14,6 +14,8 @@ import ReplyEvent from "../models/reply-event.model.js";
 import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
 import { tryCompleteCampaign } from "../utils/campaign-completion.checker.js";
 
+const GMAIL_MAILBOXES = ["INBOX", "[Gmail]/All Mail"];
+
 /* =========================
    LOGGER
 ========================= */
@@ -29,9 +31,12 @@ const log = (level, message, meta = {}) =>
   );
 
 /* =========================
-   PROCESS REPLY (AUTHORITATIVE)
+   PROCESS REPLY (SAFE)
 ========================= */
 async function processReply({ sender, email, reply }) {
+  // 🔒 Idempotency
+  if (email.status === "replied") return;
+
   log("INFO", "📩 Reply detected", {
     emailId: email.id,
     from: reply.from,
@@ -54,7 +59,6 @@ async function processReply({ sender, email, reply }) {
     repliedAt: reply.receivedAt || new Date(),
   });
 
-  // Update ONLY this recipient
   const [count, [recipient]] = await CampaignRecipient.update(
     {
       status: "replied",
@@ -65,12 +69,20 @@ async function processReply({ sender, email, reply }) {
       where: {
         campaignId: email.campaignId,
         email: email.recipientEmail,
+        status: { [Op.ne]: "replied" },
       },
       returning: true,
     }
   );
 
-  // Skip only future queued sends for this recipient
+  if (recipient) {
+    await Campaign.increment("totalReplied", {
+      by: 1,
+      where: { id: email.campaignId },
+    });
+  }
+
+  // 🔕 Cancel future sends
   await CampaignSend.update(
     { status: "skipped" },
     {
@@ -87,14 +99,7 @@ async function processReply({ sender, email, reply }) {
     recipientId: recipient.id,
   });
 
-  // 🔥 CAMPAIGN COMPLETION CHECK
-  const completed = await tryCompleteCampaign(email.campaignId);
-
-  if (completed) {
-    log("INFO", "🏁 Campaign completed via reply", {
-      campaignId: email.campaignId,
-    });
-  }
+  await tryCompleteCampaign(email.campaignId);
 }
 
 /* =========================
@@ -112,12 +117,11 @@ async function ingestViaImap(sender, messageIdMap) {
     });
 
     let mailboxIndex = 0;
-    let processed = 0;
 
     const nextMailbox = () => {
       if (mailboxIndex >= GMAIL_MAILBOXES.length) {
         imap.end();
-        return resolve(processed);
+        return resolve();
       }
 
       const mailbox = GMAIL_MAILBOXES[mailboxIndex++];
@@ -129,19 +133,13 @@ async function ingestViaImap(sender, messageIdMap) {
         imap.search(["ALL"], (err, results) => {
           if (!results?.length) return nextMailbox();
 
-          const fetch = imap.fetch(results, {
-            bodies: "",
-            struct: true,
-          });
+          const fetch = imap.fetch(results, { bodies: "" });
 
           fetch.on("message", (msg) => {
             let buffer = "";
-            let uid = null;
+            let uid;
 
-            msg.once("attributes", (attrs) => {
-              uid = attrs.uid;
-            });
-
+            msg.once("attributes", (attrs) => (uid = attrs.uid));
             msg.on("body", (s) =>
               s.on("data", (c) => (buffer += c.toString()))
             );
@@ -150,14 +148,11 @@ async function ingestViaImap(sender, messageIdMap) {
               try {
                 const parsed = await simpleParser(buffer);
 
-                // Mark SEEN immediately
                 if (uid) {
                   imap.addFlags(uid, ["\\Seen"], { uid: true }, () => {});
                 }
 
                 const from = parsed.from?.value?.[0]?.address?.toLowerCase();
-
-                // Skip self-sent & system emails
                 if (!from || from === sender.email.toLowerCase()) return;
                 if (from.includes("noreply")) return;
 
@@ -165,10 +160,8 @@ async function ingestViaImap(sender, messageIdMap) {
                   subject: parsed.subject,
                   from,
                   inReplyTo: parsed.inReplyTo,
-                  references: parsed.references,
                 });
 
-                // Collect possible thread IDs
                 const threadIds = [
                   parsed.inReplyTo,
                   ...(parsed.references || []),
@@ -183,15 +176,18 @@ async function ingestViaImap(sender, messageIdMap) {
                   }
                 }
 
-                // Subject fallback
+                // ✅ JSONB subject fallback (FIXED)
                 if (!emailId && /^re:/i.test(parsed.subject || "")) {
                   const baseSubject = parsed.subject.replace(/^re:\s*/i, "");
 
                   const fallback = await Email.findOne({
                     where: {
                       senderId: sender.id,
-                      subject: { [Op.iLike]: `%${baseSubject}%` },
+                      metadata: {
+                        subject: { [Op.iLike]: `%${baseSubject}%` },
+                      },
                     },
+                    order: [["createdAt", "DESC"]],
                   });
 
                   if (fallback) emailId = fallback.id;
@@ -200,7 +196,7 @@ async function ingestViaImap(sender, messageIdMap) {
                 if (!emailId) return;
 
                 const email = await Email.findByPk(emailId);
-                if (!email || email.status === "replied") return;
+                if (!email) return;
 
                 await processReply({
                   sender,
@@ -213,8 +209,6 @@ async function ingestViaImap(sender, messageIdMap) {
                     inReplyTo: parsed.inReplyTo,
                   },
                 });
-
-                processed++;
               } catch (e) {
                 log("ERROR", "❌ IMAP processing error", { error: e.message });
               }
@@ -227,7 +221,7 @@ async function ingestViaImap(sender, messageIdMap) {
     };
 
     imap.once("ready", nextMailbox);
-    imap.once("error", () => resolve(processed));
+    imap.once("error", () => resolve());
     imap.connect();
   });
 }
@@ -248,16 +242,11 @@ async function ingestViaOutlook(sender, messageIdMap) {
     }
   );
 
-  let processed = 0;
-
   for (const msg of res.data.value || []) {
-    const threadIds = [msg.inReplyTo, ...(msg.references || [])].filter(
-      Boolean
-    );
+    const refs = [msg.inReplyTo, ...(msg.references || [])].filter(Boolean);
 
     let emailId = null;
-
-    for (const ref of threadIds) {
+    for (const ref of refs) {
       if (messageIdMap.has(ref)) {
         emailId = messageIdMap.get(ref);
         break;
@@ -267,7 +256,7 @@ async function ingestViaOutlook(sender, messageIdMap) {
     if (!emailId) continue;
 
     const email = await Email.findByPk(emailId);
-    if (!email || email.status === "replied") continue;
+    if (!email) continue;
 
     await processReply({
       sender,
@@ -280,17 +269,13 @@ async function ingestViaOutlook(sender, messageIdMap) {
         inReplyTo: msg.inReplyTo,
       },
     });
-
-    processed++;
   }
-
-  return processed;
 }
 
 /* =========================
    MAIN LOOP
 ========================= */
-const POLL_INTERVAL_MS = 1 * 60 * 1000;
+const POLL_INTERVAL_MS = 60 * 1000;
 
 (async () => {
   log("INFO", "🚀 Reply ingestion worker started");
@@ -315,7 +300,7 @@ const POLL_INTERVAL_MS = 1 * 60 * 1000;
 
         if (sender.provider === "outlook") {
           await ingestViaOutlook(sender, map);
-        } else if (sender.imapHost && sender.imapUser && sender.imapPass) {
+        } else if (sender.imapHost) {
           await ingestViaImap(sender, map);
         }
       }

@@ -3,7 +3,6 @@ import CampaignRecipient from "../models/campaign-recipient.model.js";
 import ListUploadRecord from "../models/list-upload-record.model.js";
 import { asyncHandler } from "../helpers/async-handler.js";
 import { assertCampaignTransition } from "../utils/campaign-guards.js";
-import { publishCampaignTick } from "../queues/campaign.queue.js";
 import AppError from "../utils/app-error.js";
 import ListUploadBatch from "../models/list-upload-batch.model.js";
 
@@ -28,8 +27,6 @@ export const createCampaign = asyncHandler(async (req, res) => {
     where: { id: listBatchId, userId: req.user.id },
   });
 
-  console.log("batch: ", batch);
-
   if (!batch || batch.status !== "verified") {
     throw new AppError("List batch not ready", 400);
   }
@@ -42,28 +39,21 @@ export const createCampaign = asyncHandler(async (req, res) => {
     subject,
     htmlBody,
     textBody,
-    scheduledAt,
+    scheduledAt: scheduledAt || null, // ⬅️ DO NOT auto-set
     timezone,
     throttlePerMinute: throttlePerMinute || 10,
     status: "draft",
   });
 
-  res.status(201).json({
-    success: true,
-    data: campaign,
-  });
+  res.status(201).json({ success: true, data: campaign });
 });
 
 export const activateCampaign = asyncHandler(async (req, res) => {
   const campaign = await Campaign.findByPk(req.params.id);
-
-  if (!campaign) {
-    throw new AppError("Campaign not found", 404);
-  }
+  if (!campaign) throw new AppError("Campaign not found", 404);
 
   assertCampaignTransition(campaign.status, "scheduled");
 
-  // 🔥 materialize recipients from list batch WITH METADATA
   const records = await ListUploadRecord.findAll({
     where: {
       batchId: campaign.listBatchId,
@@ -71,28 +61,24 @@ export const activateCampaign = asyncHandler(async (req, res) => {
     },
   });
 
+  if (!records.length) {
+    throw new AppError("No valid recipients found", 400);
+  }
+
+  // ✅ THIS IS THE RULE
+  const activationTime = campaign.scheduledAt ?? new Date();
+
   const recipients = records.map((r) => ({
     campaignId: campaign.id,
     email: r.normalizedEmail,
     name: r.name || null,
-    // Extract all metadata from the record
-    metadata: {
-      name: r.name,
-      firstName: r.firstName,
-      lastName: r.lastName,
-      company: r.company,
-      industry: r.industry,
-      title: r.title,
-      location: r.location,
-      phone: r.phone,
-      tags: r.tags,
-      customFields: r.customFields || {},
-      // Include all parsed data
-      ...(r.metadata || {}),
-    },
-    // Track source
+    metadata: r.metadata || {},
     sourceRecordId: r.id,
     sourceBatchId: campaign.listBatchId,
+
+    status: "pending",
+    currentStep: 0,
+    nextRunAt: activationTime,
   }));
 
   await CampaignRecipient.bulkCreate(recipients, {
@@ -100,29 +86,20 @@ export const activateCampaign = asyncHandler(async (req, res) => {
     validate: true,
   });
 
-  // Update counts
   await campaign.update({
     status: "scheduled",
-    scheduledAt: new Date(),
+    scheduledAt: activationTime, // ✅ ALWAYS SET ON ACTIVATION
     totalRecipients: recipients.length,
     pendingRecipients: recipients.length,
   });
-
-  // Log the materialization
-  console.log(
-    `📊 Materialized ${recipients.length} recipients for campaign ${campaign.id}`
-  );
-
-  // kick scheduler
-  await publishCampaignTick(campaign.id);
 
   res.json({
     success: true,
     message: "Campaign activated",
     data: {
       campaignId: campaign.id,
+      scheduledAt: activationTime,
       recipientsCount: recipients.length,
-      materializedAt: new Date().toISOString(),
     },
   });
 });
@@ -150,7 +127,7 @@ export const resumeCampaign = asyncHandler(async (req, res) => {
 
   await campaign.update({ status: "running" });
 
-  await publishCampaignTick(campaign.id);
+  // ⚠️ Do NOT reset nextRunAt — preserve timeline
 
   res.json({ success: true, message: "Campaign resumed" });
 });

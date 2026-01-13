@@ -57,6 +57,7 @@ const Campaign = sequelize.define(
 
     scheduledAt: {
       type: DataTypes.DATE,
+      allowNull: true,
     },
 
     totalSent: {

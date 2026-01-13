@@ -26,97 +26,72 @@ const log = (level, message, meta = {}) =>
   );
 
 (async () => {
-  try {
-    log("INFO", "🚀 Campaign Scheduler starting");
+  const channel = await getChannel();
+  await channel.assertQueue(QUEUES.CAMPAIGN_SEND, { durable: true });
 
-    const channel = await getChannel();
-    await channel.assertQueue(QUEUES.CAMPAIGN_SEND, { durable: true });
+  log("INFO", "🚀 Campaign Scheduler running");
 
-    log("INFO", "✅ Scheduler connected");
+  setInterval(async () => {
+    try {
+      const campaigns = await Campaign.findAll({
+        where: {
+          status: { [Op.in]: ["scheduled", "running"] },
+        },
+      });
 
-    setInterval(async () => {
-      const tickId = Date.now();
-      log("INFO", "⏰ Scheduler tick", { tickId });
+      for (const campaign of campaigns) {
+        const now = dayjs().tz(campaign.timezone || "UTC");
 
-      try {
-        const campaigns = await Campaign.findAll({
-          where: { status: ["scheduled", "running"] },
-        });
+        // ▶️ Promote scheduled → running
+        if (
+          campaign.status === "scheduled" &&
+          (!campaign.scheduledAt || now.isAfter(campaign.scheduledAt))
+        ) {
+          await campaign.update({ status: "running" });
 
-        for (const campaign of campaigns) {
-          const now = dayjs().tz(campaign.timezone || "UTC");
-
-          // ⏳ Not due yet
-          if (
-            campaign.status === "scheduled" &&
-            campaign.scheduledAt &&
-            now.isBefore(campaign.scheduledAt)
-          ) {
-            continue;
-          }
-
-          // ▶️ Activate campaign
-          if (campaign.status === "scheduled") {
-            await campaign.update({ status: "running" });
-            log("INFO", "▶️ Campaign started", {
-              campaignId: campaign.id,
-            });
-          }
-
-          // 📥 Fetch ONLY recipients that are due
-          const recipients = await CampaignRecipient.findAll({
-            where: {
-              campaignId: campaign.id,
-              status: "pending",
-              nextRunAt: { [Op.lte]: new Date() },
-            },
-            order: [["nextRunAt", "ASC"]],
-            limit: campaign.throttlePerMinute,
-          });
-
-          if (recipients.length === 0) continue;
-
-          log("INFO", "📥 Recipients due", {
+          log("INFO", "▶️ Campaign started", {
             campaignId: campaign.id,
-            count: recipients.length,
+          });
+        }
+
+        const recipients = await CampaignRecipient.findAll({
+          where: {
+            campaignId: campaign.id,
+            status: "pending",
+            nextRunAt: {
+              [Op.or]: [{ [Op.lte]: new Date() }, { [Op.is]: null }],
+            },
+          },
+          order: [["nextRunAt", "ASC"]],
+          limit: campaign.throttlePerMinute,
+        });
+
+        for (const recipient of recipients) {
+          channel.sendToQueue(
+            QUEUES.CAMPAIGN_SEND,
+            Buffer.from(
+              JSON.stringify({
+                campaignId: campaign.id,
+                recipientId: recipient.id,
+                step: recipient.currentStep || 0,
+              })
+            ),
+            { persistent: true }
+          );
+
+          await recipient.update({
+            nextRunAt: dayjs().add(10, "minute").toDate(),
           });
 
-          for (const recipient of recipients) {
-            const payload = {
-              campaignId: campaign.id,
-              recipientId: recipient.id,
-              step: recipient.currentStep,
-            };
-
-            channel.sendToQueue(
-              QUEUES.CAMPAIGN_SEND,
-              Buffer.from(JSON.stringify(payload)),
-              { persistent: true }
-            );
-
-            // ⛔ Temporary lock to prevent re-enqueue
-            await recipient.update({
-              nextRunAt: dayjs().add(10, "minute").toDate(),
-            });
-
-            log("DEBUG", "📤 Recipient enqueued", {
-              campaignId: campaign.id,
-              recipientId: recipient.id,
-              step: recipient.currentStep,
-            });
-          }
+          log("DEBUG", "📤 Recipient enqueued", {
+            campaignId: campaign.id,
+            recipientId: recipient.id,
+            step: recipient.currentStep || 0,
+          });
         }
-      } catch (err) {
-        log("ERROR", "❌ Scheduler tick failed", {
-          tickId,
-          error: err.message,
-        });
       }
-    }, 60 * 1000);
-  } catch (err) {
-    log("ERROR", "💥 Scheduler startup failed", {
-      error: err.message,
-    });
-    process.exit(1);
-  }
+    } catch (err) {
+      log("ERROR", "❌ Scheduler error", { error: err.message });
+    }
+  }, 60 * 1000);
 })();

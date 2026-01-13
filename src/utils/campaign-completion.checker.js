@@ -7,20 +7,27 @@ export async function tryCompleteCampaign(campaignId) {
     where: {
       campaignId,
       status: {
-        [Op.notIn]: ["completed", "replied", "bounced", "stopped"],
+        [Op.in]: ["pending", "active"],
       },
     },
   });
 
-  if (remaining > 0) return false;
+  if (remaining > 0) {
+    return false;
+  }
 
-  await Campaign.update(
+  const [updated] = await Campaign.update(
     {
       status: "completed",
       completedAt: new Date(),
     },
-    { where: { id: campaignId, status: { [Op.ne]: "completed" } } }
+    {
+      where: {
+        id: campaignId,
+        status: { [Op.ne]: "completed" },
+      },
+    }
   );
 
-  return true;
+  return updated > 0;
 }

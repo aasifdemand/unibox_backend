@@ -15,6 +15,7 @@ import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
 
 import { mtaDetectorCache } from "../services/mta-detector-cache.service.js";
 import { EmailProvider } from "../enums/email-provider.enum.js";
+import { Campaign } from "../models/index.js";
 
 /* =========================
    LOGGER
@@ -45,17 +46,9 @@ function generateMessageId(emailId, domain) {
 function applyProviderRules(provider) {
   switch (provider) {
     case EmailProvider.GOOGLE:
-      return { tlsRequired: true };
-
     case EmailProvider.MICROSOFT:
-      return { tlsRequired: true };
-
     case EmailProvider.PROTON:
       return { tlsRequired: true };
-
-    case EmailProvider.SELF_HOSTED:
-      return { tlsRequired: false };
-
     default:
       return { tlsRequired: false };
   }
@@ -78,12 +71,9 @@ function applyProviderRules(provider) {
       if (!msg) return;
 
       let emailId;
-      let headers = {};
 
       try {
-        const parsed = JSON.parse(msg.content.toString());
-        emailId = parsed.emailId;
-        headers = msg.properties.headers || {};
+        emailId = JSON.parse(msg.content.toString()).emailId;
       } catch {
         channel.ack(msg);
         return;
@@ -91,6 +81,7 @@ function applyProviderRules(provider) {
 
       let email;
       let sender;
+      let send;
 
       try {
         email = await Email.findByPk(emailId);
@@ -102,8 +93,22 @@ function applyProviderRules(provider) {
         sender = await Sender.findByPk(email.senderId);
         if (!sender) throw new Error("Sender not found");
 
+        send = await CampaignSend.findOne({
+          where: { emailId },
+        });
+
+        // 🔒 Idempotency guard
+        if (send && send.status !== "queued") {
+          log("DEBUG", "⏭️ CampaignSend already processed", {
+            emailId,
+            status: send.status,
+          });
+          channel.ack(msg);
+          return;
+        }
+
         /* =========================
-           MTA DETECTION (SAFE)
+           MTA DETECTION
         ========================= */
         const recipientDomain = email.recipientEmail.split("@")[1];
 
@@ -115,9 +120,8 @@ function applyProviderRules(provider) {
         try {
           mtaInfo = await mtaDetectorCache.detect(email.recipientEmail);
         } catch (e) {
-          log("WARN", "MTA detection failed, using fallback", {
+          log("WARN", "MTA detection failed, fallback used", {
             emailId,
-            domain: recipientDomain,
             error: e.message,
           });
         }
@@ -126,10 +130,8 @@ function applyProviderRules(provider) {
 
         log("INFO", "📡 Delivery provider resolved", {
           emailId,
-          recipientDomain,
           provider: mtaInfo.provider,
           confidence: mtaInfo.confidence,
-          score: mtaInfo.score,
         });
 
         await EmailEvent.create({
@@ -142,6 +144,7 @@ function applyProviderRules(provider) {
           emailId,
           sender.email.split("@")[1]
         );
+
         let providerMessageId;
 
         /* =========================
@@ -211,28 +214,38 @@ function applyProviderRules(provider) {
         /* =========================
            FINAL UPDATES
         ========================= */
-        await email.update({
-          status: "sent",
-          providerMessageId,
-          sentAt: new Date(),
-          deliveryProvider: mtaInfo.provider,
-          deliveryConfidence: mtaInfo.confidence,
-        });
+        await Promise.all([
+          email.update({
+            status: "sent",
+            providerMessageId,
+            sentAt: new Date(),
+            deliveryProvider: mtaInfo.provider,
+            deliveryConfidence: mtaInfo.confidence,
+          }),
 
-        await CampaignSend.update(
-          { status: "sent", sentAt: new Date() },
-          { where: { emailId } }
-        );
+          CampaignSend.update(
+            {
+              status: "sent",
+              sentAt: new Date(),
+            },
+            { where: { emailId } }
+          ),
 
-        await EmailEvent.create({
-          emailId,
-          eventType: "sent",
-          eventTimestamp: new Date(),
-          metadata: {
-            provider: mtaInfo.provider,
-            confidence: mtaInfo.confidence,
-          },
-        });
+          await Campaign.increment("totalSent", {
+            by: 1,
+            where: { id: email.campaignId },
+          }),
+
+          EmailEvent.create({
+            emailId,
+            eventType: "sent",
+            eventTimestamp: new Date(),
+            metadata: {
+              provider: mtaInfo.provider,
+              confidence: mtaInfo.confidence,
+            },
+          }),
+        ]);
 
         log("INFO", "✅ Email sent", {
           emailId,
@@ -254,10 +267,15 @@ function applyProviderRules(provider) {
           });
         }
 
-        await CampaignSend.update(
-          { status: "failed", error: err.message.substring(0, 500) },
-          { where: { emailId } }
-        );
+        if (send) {
+          await CampaignSend.update(
+            {
+              status: "failed",
+              error: err.message.substring(0, 500),
+            },
+            { where: { emailId } }
+          );
+        }
 
         await BounceEvent.create({
           emailId,
@@ -267,7 +285,7 @@ function applyProviderRules(provider) {
         });
 
         await CampaignRecipient.update(
-          { status: "bounced", bounceReason: err.message.substring(0, 200) },
+          { status: "bounced" },
           {
             where: {
               email: email?.recipientEmail,

@@ -9,64 +9,41 @@ class MTADetectorCache {
       : null;
 
     this.localCache = new Map();
-    this.localTTL = 5 * 60 * 1000; // 5 minutes
-    this.dbTTL = 24 * 60 * 60 * 1000; // 24 hours
+    this.localTTL = 5 * 60 * 1000; // 5 min
+    this.dbTTL = 24 * 60 * 60 * 1000; // 24 hrs
   }
 
-  async detect(email) {
-    const domain = mtaDetector.extractDomain(email);
-    const cacheKey = `mta:${domain}`;
+  async detect(emailOrDomain) {
+    const domain = mtaDetector.extractDomain(emailOrDomain);
+    const key = `mta:${domain}`;
 
-    /* =========================
-       1️⃣ LOCAL MEMORY CACHE
-    ========================= */
-    const local = this.localCache.get(cacheKey);
+    /* ---------- LOCAL ---------- */
+    const local = this.localCache.get(key);
     if (local && Date.now() - local.ts < this.localTTL) {
       return local.data;
     }
 
-    /* =========================
-       2️⃣ REDIS CACHE
-    ========================= */
+    /* ---------- REDIS ---------- */
     if (this.redis) {
-      const cached = await this.redis.get(cacheKey);
+      const cached = await this.redis.get(key);
       if (cached) {
         const data = JSON.parse(cached);
-        this.localCache.set(cacheKey, { data, ts: Date.now() });
+        this._storeLocal(key, data);
         return data;
       }
     }
 
-    /* =========================
-       3️⃣ DATABASE CACHE (CRITICAL)
-    ========================= */
-    const dbRecord = await EmailDomainProvider.findOne({
-      where: { domain },
-    });
-
-    if (
-      dbRecord &&
-      dbRecord.ttlExpiresAt &&
-      new Date(dbRecord.ttlExpiresAt) > new Date()
-    ) {
-      const data = this._fromDB(dbRecord);
-
-      this.localCache.set(cacheKey, { data, ts: Date.now() });
-      if (this.redis) {
-        await this.redis.setex(cacheKey, 3600, JSON.stringify(data));
-      }
-
+    /* ---------- DB ---------- */
+    const record = await EmailDomainProvider.findOne({ where: { domain } });
+    if (record && new Date(record.ttlExpiresAt) > new Date()) {
+      const data = this._fromDB(record);
+      await this._storeAll(key, data);
       return data;
     }
 
-    /* =========================
-       4️⃣ HARD DETECTION
-    ========================= */
-    const detected = await mtaDetector.detect(email);
+    /* ---------- HARD DETECTION ---------- */
+    const detected = await mtaDetector.detect(domain);
 
-    /* =========================
-       5️⃣ PERSIST RESULT (UPSERT)
-    ========================= */
     await EmailDomainProvider.upsert({
       domain,
       provider: detected.provider,
@@ -77,11 +54,7 @@ class MTADetectorCache {
       ttlExpiresAt: new Date(Date.now() + this.dbTTL),
     });
 
-    this.localCache.set(cacheKey, { data: detected, ts: Date.now() });
-    if (this.redis) {
-      await this.redis.setex(cacheKey, 3600, JSON.stringify(detected));
-    }
-
+    await this._storeAll(key, detected);
     return detected;
   }
 
@@ -100,6 +73,17 @@ class MTADetectorCache {
     if (this.redis) await this.redis.del(key);
   }
 
+  _storeLocal(key, data) {
+    this.localCache.set(key, { data, ts: Date.now() });
+  }
+
+  async _storeAll(key, data) {
+    this._storeLocal(key, data);
+    if (this.redis) {
+      await this.redis.setex(key, 3600, JSON.stringify(data));
+    }
+  }
+
   _fromDB(record) {
     return {
       domain: record.domain,
@@ -113,3 +97,4 @@ class MTADetectorCache {
 }
 
 export const mtaDetectorCache = new MTADetectorCache();
+export default mtaDetectorCache;
