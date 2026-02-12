@@ -63,16 +63,23 @@ const Sender = sequelize.define(
     lastInboxSyncAt: DataTypes.DATE,
 
     /* =========================
-       MICROSOFT OAUTH
+       OAUTH - COMMON FIELDS
     ========================= */
-    oauthProvider: DataTypes.STRING, // "microsoft"
+    oauthProvider: DataTypes.STRING, // "google" or "microsoft"
+    oauthId: DataTypes.STRING, // Unique ID from OAuth provider
 
-    oauthClientId: DataTypes.STRING,
-    oauthTenantId: DataTypes.STRING,
+    // For Google OAuth
+    accessToken: DataTypes.TEXT,
+    refreshToken: DataTypes.TEXT,
+    expiresAt: DataTypes.DATE,
 
+    // For Microsoft OAuth (keeping backward compatibility)
     oauthAccessToken: DataTypes.TEXT,
     oauthRefreshToken: DataTypes.TEXT,
     oauthExpiresAt: DataTypes.DATE,
+
+    oauthClientId: DataTypes.STRING,
+    oauthTenantId: DataTypes.STRING,
 
     /* =========================
        STATE
@@ -87,7 +94,7 @@ const Sender = sequelize.define(
     timestamps: true,
     paranoid: true,
     indexes: [{ unique: true, fields: ["email"] }],
-  }
+  },
 );
 
 export default Sender;

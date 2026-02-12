@@ -11,8 +11,7 @@ passport.use(
       passReqToCallback: true,
       authorizationURL:
         "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-      tokenURL:
-        "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+      tokenURL: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
       scope: [
         "openid",
         "profile",
@@ -27,6 +26,8 @@ passport.use(
       profile._refreshToken = refreshToken;
       profile._expiresIn = params.expires_in;
       return done(null, profile);
-    }
-  )
+    },
+  ),
 );
+
+export default passport;

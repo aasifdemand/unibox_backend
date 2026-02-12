@@ -1,4 +1,5 @@
 import { Router } from "express";
+import passport from "../config/passportgoogle-oauth.js";
 import {
   forgotPassword,
   googleCallback,
@@ -7,9 +8,7 @@ import {
   resetPassword,
   signup,
 } from "../controllers/auth.controller.js";
-import passport from "passport";
-import { protect, protectOptional } from "../middlewares/auth.middleware.js";
-import Sender from "../models/sender.model.js";
+import { asyncHandler } from "../helpers/async-handler.js";
 
 const router = Router();
 
@@ -17,8 +16,12 @@ const router = Router();
  * @swagger
  * tags:
  *   name: Auth
- *   description: Authentication APIs
+ *   description: User Authentication APIs
  */
+
+// =========================
+// LOCAL AUTHENTICATION
+// =========================
 
 /**
  * @swagger
@@ -26,7 +29,7 @@ const router = Router();
  *   post:
  *     summary: Register a new user
  *     tags: [Auth]
- *     security: []   # public
+ *     security: []
  *     requestBody:
  *       required: true
  *       content:
@@ -46,16 +49,6 @@ const router = Router();
  *     responses:
  *       201:
  *         description: Signup successful
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
- *       409:
- *         description: User already exists
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
  */
 router.post("/signup", signup);
 
@@ -65,7 +58,7 @@ router.post("/signup", signup);
  *   post:
  *     summary: Login user
  *     tags: [Auth]
- *     security: []   # public
+ *     security: []
  *     requestBody:
  *       required: true
  *       content:
@@ -83,140 +76,26 @@ router.post("/signup", signup);
  *     responses:
  *       200:
  *         description: Login successful
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
- *       401:
- *         description: Invalid credentials
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
  */
 router.post("/login", login);
 
 /**
  * @swagger
- * /api/v1/auth/google:
- *   get:
- *     summary: Login with Google
+ * /api/v1/auth/logout:
+ *   post:
+ *     summary: Logout the currently authenticated user
  *     tags: [Auth]
- *     security: []
+ *     security:
+ *       - cookieAuth: []
+ *     responses:
+ *       200:
+ *         description: Logout successful
  */
-router.get(
-  "/google",
-  passport.authenticate("google", {
-    scope: ["profile", "email"],
-    session: false,
-  })
-);
+router.post("/logout", logout);
 
-/**
- * @swagger
- * /api/v1/auth/google/callback:
- *   get:
- *     summary: Google OAuth callback
- *     tags: [Auth]
- *     security: []
- */
-router.get(
-  "/google/callback",
-  passport.authenticate("google", {
-    session: false,
-    prompt: "select_account",
-    failureRedirect: "/login",
-  }),
-  googleCallback
-);
-
-/**
- * Start Outlook OAuth
- */
-router.get("/microsoft/start", (req, res, next) => {
-  const { userId } = req.query;
-
-  if (!userId) {
-    return res.status(400).json({
-      success: false,
-      message: "Missing userId",
-    });
-  }
-
-  passport.authenticate("microsoft", {
-    prompt: "select_account",
-    scope: [
-      "openid",
-      "profile",
-      "offline_access",
-      "User.Read",
-      "Mail.Send",
-      "Mail.Read",
-    ],
-    state: userId, // 👈 CRITICAL
-    session: false,
-  })(req, res, next);
-});
-
-
-
-/**
- * OAuth callback
- */
-router.get(
-  "/microsoft/callback",
-  passport.authenticate("microsoft", {
-    session: false,
-    failureRedirect: `${process.env.FRONTEND_URL}/connect/outlook?error=oauth_failed`,
-  }),
-  async (req, res) => {
-    try {
-      const userId = req.query.state;
-
-      if (!userId) {
-        throw new Error("Missing OAuth state (userId)");
-      }
-
-      const {
-        _accessToken,
-        _refreshToken,
-        _expiresIn,
-        displayName,
-        emails,
-        _json,
-      } = req.user;
-
-      const email =
-        emails?.[0]?.value ||
-        _json?.mail ||
-        _json?.userPrincipalName;
-
-      await Sender.create({
-        userId,
-        email,
-        displayName,
-        domain: email.split("@")[1],
-        provider: "outlook",
-
-        oauthProvider: "microsoft",
-        oauthAccessToken: _accessToken,
-        oauthRefreshToken: _refreshToken,
-        oauthExpiresAt: new Date(Date.now() + _expiresIn * 1000),
-      });
-
-      res.redirect(
-        `${process.env.FRONTEND_URL}/senders?connected=outlook`
-      );
-    } catch (err) {
-      console.error(err);
-      res.redirect(
-        `${process.env.FRONTEND_URL}/senders?error=save_failed`
-      );
-    }
-  }
-);
-
-
+// =========================
+// PASSWORD RESET
+// =========================
 
 /**
  * @swagger
@@ -224,7 +103,7 @@ router.get(
  *   post:
  *     summary: Send OTP to user's email for password reset
  *     tags: [Auth]
- *     security: []   # public
+ *     security: []
  *     requestBody:
  *       required: true
  *       content:
@@ -236,20 +115,9 @@ router.get(
  *               email:
  *                 type: string
  *                 format: email
- *                 example: user@example.com
  *     responses:
  *       200:
  *         description: OTP sent successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
- *       404:
- *         description: User not found
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
  */
 router.post("/forgot-password", forgotPassword);
 
@@ -259,7 +127,7 @@ router.post("/forgot-password", forgotPassword);
  *   post:
  *     summary: Verify OTP and reset user password
  *     tags: [Auth]
- *     security: []   # public
+ *     security: []
  *     requestBody:
  *       required: true
  *       content:
@@ -273,52 +141,107 @@ router.post("/forgot-password", forgotPassword);
  *                 format: email
  *               otp:
  *                 type: string
- *                 example: "123456"
  *               newPassword:
  *                 type: string
  *                 format: password
  *     responses:
  *       200:
  *         description: Password reset successful
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
- *       400:
- *         description: Invalid or expired OTP
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
  */
 router.post("/reset-password", resetPassword);
 
+// =========================
+// USER OAUTH (NOT FOR SENDERS)
+// =========================
+
 /**
  * @swagger
- * /api/v1/auth/logout:
- *   post:
- *     summary: Logout the currently authenticated user
+ * /api/v1/auth/google:
+ *   get:
+ *     summary: Login with Google (User Authentication)
  *     tags: [Auth]
- *     security:
- *       - cookieAuth: []
+ *     security: []
  *     responses:
- *       200:
- *         description: Logout successful
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
- *       401:
- *         description: Not authenticated
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
+ *       302:
+ *         description: Redirects to Google OAuth
  */
-router.post("/logout", logout);
+router.get(
+  "/google",
+  passport.authenticate("google", {
+    scope: ["profile", "email"],
+    session: false,
+  }),
+);
+
+/**
+ * @swagger
+ * /api/v1/auth/google/callback:
+ *   get:
+ *     summary: Google OAuth callback (User Authentication)
+ *     tags: [Auth]
+ *     security: []
+ *     responses:
+ *       302:
+ *         description: Redirects to frontend
+ */
+router.get(
+  "/google/callback",
+  passport.authenticate("google", {
+    session: false,
+    prompt: "select_account",
+    failureRedirect: "/login",
+  }),
+  googleCallback,
+);
+
+/**
+ * @swagger
+ * /api/v1/auth/microsoft:
+ *   get:
+ *     summary: Login with Microsoft (User Authentication)
+ *     tags: [Auth]
+ *     security: []
+ *     responses:
+ *       302:
+ *         description: Redirects to Microsoft OAuth
+ */
+router.get("/microsoft", (req, res, next) => {
+  passport.authenticate("microsoft", {
+    prompt: "select_account",
+    scope: ["openid", "profile", "email", "User.Read"],
+    session: false,
+  })(req, res, next);
+});
+
+/**
+ * @swagger
+ * /api/v1/auth/microsoft/callback:
+ *   get:
+ *     summary: Microsoft OAuth callback (User Authentication)
+ *     tags: [Auth]
+ *     security: []
+ *     responses:
+ *       302:
+ *         description: Redirects to frontend
+ */
+router.get(
+  "/microsoft/callback",
+  passport.authenticate("microsoft", {
+    session: false,
+    failureRedirect: "/login?error=oauth_failed",
+  }),
+  asyncHandler(async (req, res) => {
+    // Handle user authentication callback
+    // This is different from sender OAuth
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080";
+    const cleanUrl = frontendUrl.endsWith("/")
+      ? frontendUrl.slice(0, -1)
+      : frontendUrl;
+
+    // Generate JWT token for user
+    // Redirect to frontend with token
+    res.redirect(`${cleanUrl}/dashboard?token=${userToken}`);
+  }),
+);
 
 export default router;
-
-
-
-

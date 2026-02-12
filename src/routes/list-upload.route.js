@@ -1,8 +1,14 @@
 import { Router } from "express";
 import { upload } from "../middlewares/upload.middleware.js";
-import { getBatchStatus, getUserBatches, uploadList } from "../controllers/list-upload.controller.js";
+import {
+  deleteBatch,
+  exportBatch,
+  getBatchStatus,
+  getUserBatches,
+  retryBatch,
+  uploadList,
+} from "../controllers/list-upload.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
-
 
 const router = Router();
 
@@ -19,14 +25,14 @@ const router = Router();
  *   post:
  *     summary: Upload a contact list file (CSV, XLSX, TXT)
  *     description: |
- *       Upload a list file containing email addresses.  
+ *       Upload a list file containing email addresses.
  *       The file is validated, stored, and processed asynchronously.
- *       
+ *
  *       Processing includes:
  *       - Parsing & normalization
  *       - Deduplication
  *       - Record-level job queuing
- *       
+ *
  *       The request is non-blocking and returns a batch ID immediately.
  *     tags: [Lists]
  *     security:
@@ -99,5 +105,10 @@ router.get("/batch/:batchId/status", protect, getBatchStatus);
  *       - cookieAuth: []
  */
 router.get("/batches", protect, getUserBatches);
+
+// In your backend routes (list-upload.routes.js or similar)
+router.delete("/batch/:batchId", protect, deleteBatch);
+router.post("/batch/:batchId/retry", protect, retryBatch);
+router.get("/batch/:batchId/export", protect, exportBatch);
 
 export default router;

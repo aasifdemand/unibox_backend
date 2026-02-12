@@ -5,22 +5,172 @@ import { asyncHandler } from "../helpers/async-handler.js";
 import { assertCampaignTransition } from "../utils/campaign-guards.js";
 import AppError from "../utils/app-error.js";
 import ListUploadBatch from "../models/list-upload-batch.model.js";
+import GmailSender from "../models/gmail-sender.model.js";
+import OutlookSender from "../models/outlook-sender.model.js";
+import SmtpSender from "../models/smtp-sender.model.js";
+import GlobalEmailRegistry from "../models/global-email-registry.model.js";
 
+export const getCampaigns = asyncHandler(async (req, res) => {
+  const campaigns = await Campaign.findAll({
+    where: { userId: req.user.id },
+    order: [["createdAt", "DESC"]],
+    include: [
+      {
+        model: ListUploadBatch,
+        as: "ListUploadBatch",
+        attributes: [
+          "id",
+          "originalFilename",
+          "validRecords",
+          "totalRecords",
+          "status",
+        ],
+      },
+    ],
+  });
+
+  // Get all records for these campaigns' batches
+  const records = await ListUploadRecord.findAll({
+    where: {
+      batchId: campaigns.map((c) => c.listBatchId).filter(Boolean),
+    },
+    attributes: ["id", "normalizedEmail", "batchId"],
+  });
+
+  // Get normalized emails
+  const normalizedEmails = records
+    .map((r) => r.normalizedEmail)
+    .filter(Boolean);
+
+  // Query GlobalEmailRegistry for valid emails
+  const validEmails = await GlobalEmailRegistry.findAll({
+    where: {
+      normalizedEmail: normalizedEmails,
+      verificationStatus: "valid",
+    },
+    attributes: ["normalizedEmail"],
+  });
+
+  // Create a Set for quick lookup
+  const validEmailSet = new Set(validEmails.map((e) => e.normalizedEmail));
+
+  // Group records by batchId
+  const recordsByBatch = {};
+  records.forEach((record) => {
+    if (!recordsByBatch[record.batchId]) {
+      recordsByBatch[record.batchId] = [];
+    }
+    recordsByBatch[record.batchId].push(record);
+  });
+
+  // Transform the response
+  const campaignsWithData = campaigns.map((campaign) => {
+    const campaignData = campaign.toJSON();
+    const batchId = campaignData.listBatchId;
+
+    // Get records for this batch
+    const batchRecords = recordsByBatch[batchId] || [];
+
+    // Count valid emails in this batch
+    let validRecipientsCount = 0;
+    batchRecords.forEach((record) => {
+      if (validEmailSet.has(record.normalizedEmail)) {
+        validRecipientsCount++;
+      }
+    });
+
+    return {
+      ...campaignData,
+      totalRecipients: validRecipientsCount,
+      batchValidCount: validRecipientsCount,
+      batchTotalCount: batchRecords.length,
+      batchName: campaignData.ListUploadBatch?.originalFilename || "Unknown",
+    };
+  });
+
+  res.json({
+    success: true,
+    data: campaignsWithData,
+    count: campaigns.length,
+  });
+});
+/**
+ * GET SINGLE CAMPAIGN
+ */
+export const getCampaign = asyncHandler(async (req, res) => {
+  const campaign = await Campaign.findOne({
+    where: {
+      id: req.params.id,
+      userId: req.user.id,
+    },
+    include: [
+      {
+        model: ListUploadBatch,
+        as: "ListUploadBatch", // ✅ Changed from "batch" to "ListUploadBatch"
+        attributes: [
+          "id",
+          "originalFilename",
+          "validRecords",
+          "status",
+          "totalRecords",
+        ],
+      },
+      {
+        model: CampaignRecipient,
+        as: "CampaignRecipients",
+        attributes: [
+          "id",
+          "email",
+          "name",
+          "status",
+          "lastSentAt",
+          "repliedAt",
+        ],
+        limit: 50,
+        required: false, // Make it optional
+      },
+    ],
+  });
+
+  if (!campaign) {
+    throw new AppError("Campaign not found", 404);
+  }
+
+  res.json({
+    success: true,
+    data: campaign,
+  });
+});
+
+/**
+ * CREATE CAMPAIGN - Always create as DRAFT
+ */
 export const createCampaign = asyncHandler(async (req, res) => {
   const {
     name,
     subject,
     htmlBody,
     textBody,
+    previewText,
     senderId,
+    senderType,
     listBatchId,
+    scheduleType,
     scheduledAt,
     timezone,
     throttlePerMinute,
+    trackOpens,
+    trackClicks,
+    unsubscribeLink,
   } = req.body;
 
   if (!name || !subject || !senderId || !listBatchId) {
     throw new AppError("Missing required fields", 400);
+  }
+
+  // Validate senderType
+  if (!senderType || !["gmail", "outlook", "smtp"].includes(senderType)) {
+    throw new AppError("Invalid sender type", 400);
   }
 
   const batch = await ListUploadBatch.findOne({
@@ -31,26 +181,160 @@ export const createCampaign = asyncHandler(async (req, res) => {
     throw new AppError("List batch not ready", 400);
   }
 
+  // Verify sender exists based on type
+  let sender;
+  switch (senderType) {
+    case "gmail":
+      sender = await GmailSender.findOne({
+        where: { id: senderId, userId: req.user.id, isVerified: true },
+      });
+      break;
+    case "outlook":
+      sender = await OutlookSender.findOne({
+        where: { id: senderId, userId: req.user.id, isVerified: true },
+      });
+      break;
+    case "smtp":
+      sender = await SmtpSender.findOne({
+        where: { id: senderId, userId: req.user.id, isVerified: true },
+      });
+      break;
+  }
+
+  if (!sender) {
+    throw new AppError("Invalid or unverified sender", 400);
+  }
+
+  // ALWAYS create as DRAFT - activation happens separately
   const campaign = await Campaign.create({
     userId: req.user.id,
     senderId,
+    senderType,
     listBatchId,
+    name,
+    subject,
+    htmlBody: htmlBody || "",
+    textBody: textBody || "",
+    previewText: previewText || "",
+    scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
+    timezone: timezone || "UTC",
+    throttlePerMinute: throttlePerMinute || 10,
+    trackOpens: trackOpens !== undefined ? trackOpens : true,
+    trackClicks: trackClicks !== undefined ? trackClicks : true,
+    unsubscribeLink: unsubscribeLink !== undefined ? unsubscribeLink : true,
+    status: "draft", // ALWAYS draft initially
+    totalSent: 0,
+    totalReplied: 0,
+  });
+
+  // DO NOT create recipients here - they are created during activation
+
+  res.status(201).json({
+    success: true,
+    data: campaign,
+    message: "Campaign created as draft. Activate it when ready to send.",
+  });
+});
+
+/**
+ * UPDATE CAMPAIGN
+ */
+export const updateCampaign = asyncHandler(async (req, res) => {
+  const campaign = await Campaign.findOne({
+    where: {
+      id: req.params.id,
+      userId: req.user.id,
+    },
+  });
+
+  if (!campaign) {
+    throw new AppError("Campaign not found", 404);
+  }
+
+  // Only allow updates to campaigns in draft or paused state
+  if (!["draft", "paused"].includes(campaign.status)) {
+    throw new AppError("Cannot update campaign in current state", 400);
+  }
+
+  const {
     name,
     subject,
     htmlBody,
     textBody,
-    scheduledAt: scheduledAt || null, // ⬅️ DO NOT auto-set
+    previewText,
+    scheduledAt,
     timezone,
-    throttlePerMinute: throttlePerMinute || 10,
-    status: "draft",
-  });
+    throttlePerMinute,
+    trackOpens,
+    trackClicks,
+    unsubscribeLink,
+  } = req.body;
 
-  res.status(201).json({ success: true, data: campaign });
+  // Update only provided fields
+  const updates = {};
+  if (name !== undefined) updates.name = name;
+  if (subject !== undefined) updates.subject = subject;
+  if (htmlBody !== undefined) updates.htmlBody = htmlBody;
+  if (textBody !== undefined) updates.textBody = textBody;
+  if (previewText !== undefined) updates.previewText = previewText;
+  if (scheduledAt !== undefined)
+    updates.scheduledAt = scheduledAt ? new Date(scheduledAt) : null;
+  if (timezone !== undefined) updates.timezone = timezone;
+  if (throttlePerMinute !== undefined)
+    updates.throttlePerMinute = throttlePerMinute;
+  if (trackOpens !== undefined) updates.trackOpens = trackOpens;
+  if (trackClicks !== undefined) updates.trackClicks = trackClicks;
+  if (unsubscribeLink !== undefined) updates.unsubscribeLink = unsubscribeLink;
+
+  await campaign.update(updates);
+
+  res.json({
+    success: true,
+    data: campaign,
+    message: "Campaign updated successfully",
+  });
 });
 
+/**
+ * DELETE CAMPAIGN
+ */
+export const deleteCampaign = asyncHandler(async (req, res) => {
+  const campaign = await Campaign.findOne({
+    where: {
+      id: req.params.id,
+      userId: req.user.id,
+    },
+  });
+
+  if (!campaign) {
+    throw new AppError("Campaign not found", 404);
+  }
+
+  // Only allow deletion of campaigns in draft, completed, or paused state
+  if (!["draft", "completed", "paused"].includes(campaign.status)) {
+    throw new AppError("Cannot delete campaign in current state", 400);
+  }
+
+  // Soft delete the campaign
+  await campaign.destroy();
+
+  res.json({
+    success: true,
+    message: "Campaign deleted successfully",
+  });
+});
+
+/**
+ * ACTIVATE CAMPAIGN
+ */
 export const activateCampaign = asyncHandler(async (req, res) => {
   const campaign = await Campaign.findByPk(req.params.id);
   if (!campaign) throw new AppError("Campaign not found", 404);
+
+  // Check if campaign belongs to user
+  if (campaign.userId !== req.user.id) {
+    throw new AppError("Unauthorized", 403);
+  }
 
   assertCampaignTransition(campaign.status, "scheduled");
 
@@ -65,7 +349,6 @@ export const activateCampaign = asyncHandler(async (req, res) => {
     throw new AppError("No valid recipients found", 400);
   }
 
-  // ✅ THIS IS THE RULE
   const activationTime = campaign.scheduledAt ?? new Date();
 
   const recipients = records.map((r) => ({
@@ -75,7 +358,6 @@ export const activateCampaign = asyncHandler(async (req, res) => {
     metadata: r.metadata || {},
     sourceRecordId: r.id,
     sourceBatchId: campaign.listBatchId,
-
     status: "pending",
     currentStep: 0,
     nextRunAt: activationTime,
@@ -88,7 +370,7 @@ export const activateCampaign = asyncHandler(async (req, res) => {
 
   await campaign.update({
     status: "scheduled",
-    scheduledAt: activationTime, // ✅ ALWAYS SET ON ACTIVATION
+    scheduledAt: activationTime,
     totalRecipients: recipients.length,
     pendingRecipients: recipients.length,
   });
@@ -110,6 +392,13 @@ export const activateCampaign = asyncHandler(async (req, res) => {
 export const pauseCampaign = asyncHandler(async (req, res) => {
   const campaign = await Campaign.findByPk(req.params.id);
 
+  if (!campaign) throw new AppError("Campaign not found", 404);
+
+  // Check if campaign belongs to user
+  if (campaign.userId !== req.user.id) {
+    throw new AppError("Unauthorized", 403);
+  }
+
   assertCampaignTransition(campaign.status, "paused");
 
   await campaign.update({ status: "paused" });
@@ -123,11 +412,16 @@ export const pauseCampaign = asyncHandler(async (req, res) => {
 export const resumeCampaign = asyncHandler(async (req, res) => {
   const campaign = await Campaign.findByPk(req.params.id);
 
+  if (!campaign) throw new AppError("Campaign not found", 404);
+
+  // Check if campaign belongs to user
+  if (campaign.userId !== req.user.id) {
+    throw new AppError("Unauthorized", 403);
+  }
+
   assertCampaignTransition(campaign.status, "running");
 
   await campaign.update({ status: "running" });
-
-  // ⚠️ Do NOT reset nextRunAt — preserve timeline
 
   res.json({ success: true, message: "Campaign resumed" });
 });

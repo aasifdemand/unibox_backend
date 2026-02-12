@@ -18,6 +18,7 @@ const Campaign = sequelize.define(
     senderId: {
       type: DataTypes.UUID,
       allowNull: false,
+      // REMOVE THE REFERENCES since we have polymorphic associations
     },
 
     name: {
@@ -49,7 +50,7 @@ const Campaign = sequelize.define(
         "running",
         "sending",
         "completed",
-        "paused"
+        "paused",
       ),
       allowNull: false,
       defaultValue: "draft",
@@ -85,18 +86,26 @@ const Campaign = sequelize.define(
       type: DataTypes.INTEGER,
       defaultValue: 20,
     },
+    // Add senderType field
+    senderType: {
+      type: DataTypes.ENUM("gmail", "outlook", "smtp"),
+      allowNull: false,
+      defaultValue: "smtp",
+    },
   },
   {
     tableName: "campaigns",
     timestamps: true,
-    paranoid: true, // enables deletedAt
+    paranoid: true,
     indexes: [
       { fields: ["userId"] },
       { fields: ["senderId"] },
       { fields: ["status"] },
       { fields: ["scheduledAt"] },
+      // Add composite index for sender lookup
+      { fields: ["senderId", "senderType"] },
     ],
-  }
+  },
 );
 
 export default Campaign;

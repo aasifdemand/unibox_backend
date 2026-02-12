@@ -8,9 +8,6 @@ import { generateOtp } from "../helpers/generate-otp.js";
 import crypto from "node:crypto";
 import { Op } from "sequelize";
 
-
-
-
 export const signup = asyncHandler(async (req, res) => {
   const { name, email, password } = req.body;
 
@@ -32,17 +29,16 @@ export const signup = asyncHandler(async (req, res) => {
 
   const token = genToken(newUser.id);
 
-res.cookie("access_token", token, {
-  httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "strict",
-  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-});
+  res.cookie("access_token", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  });
 
-res.created({
-  message: "Signup successful",
-});
-
+  res.created({
+    message: "Signup successful",
+  });
 });
 
 export const login = asyncHandler(async (req, res) => {
@@ -66,22 +62,19 @@ export const login = asyncHandler(async (req, res) => {
 
   const token = genToken(user.id);
 
- res.cookie("access_token", token, {
-  httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "strict",
-  maxAge: 7 * 24 * 60 * 60 * 1000,
+  res.cookie("access_token", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+
+  res.ok({
+    message: "Login successful",
+  });
 });
 
-res.ok({
-  message: "Login successful",
-});
-
-
-});
-
-
-export const googleCallback =asyncHandler(async (req, res) => {
+export const googleCallback = asyncHandler(async (req, res) => {
   const user = req.user;
 
   const token = genToken(user.id);
@@ -92,12 +85,12 @@ export const googleCallback =asyncHandler(async (req, res) => {
     sameSite: "strict",
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
-res.redirect("/profile.html");
+  res.redirect(`${process.env.FRONTEND_URL}/dashboard`);
   // redirect back to frontend
   // res.redirect("http://localhost:5173/dashboard");
-}) 
+});
 
-export const logout =asyncHandler(async (req, res) => {
+export const logout = asyncHandler(async (req, res) => {
   res.clearCookie("access_token", {
     httpOnly: true,
     sameSite: "strict",
@@ -105,11 +98,7 @@ export const logout =asyncHandler(async (req, res) => {
   });
 
   res.ok({ message: "Logged out successfully" });
-}) 
-
-
-
-
+});
 
 export const forgotPassword = asyncHandler(async (req, res) => {
   const { email } = req.body;
@@ -141,13 +130,10 @@ export const forgotPassword = asyncHandler(async (req, res) => {
     `,
   });
 
- res.ok({
-  message: "OTP sent to email",
+  res.ok({
+    message: "OTP sent to email",
+  });
 });
-
-
-});
-
 
 export const resetPassword = asyncHandler(async (req, res) => {
   const { email, otp, newPassword } = req.body;
@@ -156,10 +142,7 @@ export const resetPassword = asyncHandler(async (req, res) => {
     throw new AppError("All fields are required", 400);
   }
 
-  const hashedOtp = crypto
-    .createHash("sha256")
-    .update(otp)
-    .digest("hex");
+  const hashedOtp = crypto.createHash("sha256").update(otp).digest("hex");
 
   const user = await User.findOne({
     where: {
@@ -179,9 +162,7 @@ export const resetPassword = asyncHandler(async (req, res) => {
 
   await user.save();
 
- res.ok({
-  message: "Password reset successful",
-});
-
-
+  res.ok({
+    message: "Password reset successful",
+  });
 });

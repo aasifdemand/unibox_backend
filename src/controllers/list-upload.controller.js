@@ -7,7 +7,7 @@ import XLSX from "xlsx";
 import ListUploadBatch from "../models/list-upload-batch.model.js";
 import ListUploadRecord from "../models/list-upload-record.model.js";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
-import { Op } from "sequelize";
+import { Op, fn, col, literal } from "sequelize";
 import { asyncHandler } from "../helpers/async-handler.js";
 import sequelize from "../config/db.js";
 import {
@@ -481,7 +481,7 @@ const processRecords = async (batch, records) => {
   if (batchRecords.length > 0) {
     try {
       console.log(
-        `💾 Inserting ${batchRecords.length} records into database...`
+        `💾 Inserting ${batchRecords.length} records into database...`,
       );
       await ListUploadRecord.bulkCreate(batchRecords, {
         validate: true,
@@ -528,7 +528,85 @@ const processRecords = async (batch, records) => {
   }
 };
 
-// Get batch status
+export const getBatchVerificationStats = async (batchId) => {
+  try {
+    const rows = await ListUploadRecord.findAll({
+      where: {
+        batchId,
+        normalizedEmail: { [Op.ne]: null },
+      },
+      include: [
+        {
+          model: GlobalEmailRegistry,
+          required: false,
+          attributes: [],
+        },
+      ],
+      attributes: [
+        [
+          fn(
+            "SUM",
+            literal(
+              `CASE WHEN "GlobalEmailRegistry"."verificationStatus" = 'valid' THEN 1 ELSE 0 END`,
+            ),
+          ),
+          "validCount",
+        ],
+        [
+          fn(
+            "SUM",
+            literal(
+              `CASE WHEN "GlobalEmailRegistry"."verificationStatus" = 'invalid' THEN 1 ELSE 0 END`,
+            ),
+          ),
+          "invalidCount",
+        ],
+        [
+          fn(
+            "SUM",
+            literal(
+              `CASE WHEN "GlobalEmailRegistry"."verificationStatus" = 'risky' THEN 1 ELSE 0 END`,
+            ),
+          ),
+          "riskyCount",
+        ],
+        [
+          fn(
+            "SUM",
+            literal(
+              `CASE 
+                WHEN "GlobalEmailRegistry"."verificationStatus" IS NULL
+                OR "GlobalEmailRegistry"."verificationStatus" IN ('unknown','verifying')
+                THEN 1 ELSE 0 END`,
+            ),
+          ),
+          "unverifiedCount",
+        ],
+      ],
+      raw: true,
+    });
+
+    return {
+      valid: Number(rows[0]?.validCount || 0),
+      invalid: Number(rows[0]?.invalidCount || 0),
+      risky: Number(rows[0]?.riskyCount || 0),
+      unverified: Number(rows[0]?.unverifiedCount || 0),
+    };
+  } catch (error) {
+    console.error(
+      `Error getting verification stats for batch ${batchId}:`,
+      error,
+    );
+    return {
+      valid: 0,
+      invalid: 0,
+      risky: 0,
+      unverified: 0,
+    };
+  }
+};
+
+// Get batch status with verification results
 export const getBatchStatus = asyncHandler(async (req, res) => {
   const batch = await ListUploadBatch.findOne({
     where: {
@@ -543,6 +621,9 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
       message: "Batch not found",
     });
   }
+
+  // Get verification stats
+  const verificationStats = await getBatchVerificationStats(batch.id);
 
   // Get record counts
   const counts = await ListUploadRecord.findAll({
@@ -559,12 +640,23 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
     countsMap[item.status] = parseInt(item.dataValues.count);
   });
 
-  // Get sample records
+  // In getBatchStatus function, replace the sampleRecords query:
   const sampleRecords = await ListUploadRecord.findAll({
     where: { batchId: batch.id },
+    include: [
+      {
+        model: GlobalEmailRegistry,
+        attributes: [
+          "verificationStatus",
+          "verifiedAt", // Changed from lastVerifiedAt
+          "verificationMeta", // Use verificationMeta instead of reason
+        ],
+      },
+    ],
     attributes: [
       "id",
       "status",
+      "rawEmail",
       "normalizedEmail",
       "name",
       "failureReason",
@@ -572,6 +664,90 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
     ],
     order: [["createdAt", "DESC"]],
     limit: 10,
+  });
+
+  // Also update the allVerifiedRecords query:
+  const allVerifiedRecords = await ListUploadRecord.findAll({
+    where: {
+      batchId: batch.id,
+      normalizedEmail: { [Op.ne]: null },
+    },
+    include: [
+      {
+        model: GlobalEmailRegistry,
+        attributes: ["verificationStatus", "verifiedAt", "verificationMeta"],
+      },
+    ],
+    attributes: [
+      "id",
+      "status",
+      "rawEmail",
+      "normalizedEmail",
+      "name",
+      "failureReason",
+      "createdAt",
+    ],
+    order: [["createdAt", "DESC"]],
+  });
+
+  // Update the mapped records to use correct field names:
+  const mappedSampleRecords = sampleRecords.map((record) => ({
+    id: record.id,
+    status: record.status,
+    email: record.normalizedEmail || record.rawEmail,
+    name: record.name,
+    failureReason: record.failureReason,
+    verificationStatus: record.GlobalEmailRegistry?.verificationStatus,
+    verifiedAt: record.GlobalEmailRegistry?.verifiedAt, // Changed from lastVerifiedAt
+    verificationReason: record.GlobalEmailRegistry?.verificationMeta, // Changed from reason
+    createdAt: record.createdAt,
+  }));
+
+  // Update the mappedAllRecords similarly:
+  const mappedAllRecords = allVerifiedRecords.map((record) => ({
+    id: record.id,
+    status: record.status,
+    email: record.normalizedEmail || record.rawEmail,
+    name: record.name,
+    failureReason: record.failureReason,
+    verificationStatus: record.GlobalEmailRegistry?.verificationStatus,
+    verifiedAt: record.GlobalEmailRegistry?.verifiedAt,
+    verificationReason: record.GlobalEmailRegistry?.verificationMeta,
+    createdAt: record.createdAt,
+  }));
+
+  const verificationBreakdown = await ListUploadRecord.findAll({
+    where: {
+      batchId: batch.id,
+      normalizedEmail: { [Op.ne]: null },
+    },
+    include: [
+      {
+        model: GlobalEmailRegistry,
+        required: false,
+        attributes: [],
+      },
+    ],
+    attributes: [
+      [
+        literal(
+          `COALESCE("GlobalEmailRegistry"."verificationStatus", 'unknown')`,
+        ),
+        "verificationStatus",
+      ],
+      [sequelize.fn("COUNT", sequelize.col("ListUploadRecord.id")), "count"],
+    ],
+    group: [
+      literal(
+        `COALESCE("GlobalEmailRegistry"."verificationStatus", 'unknown')`,
+      ),
+    ],
+    raw: true,
+  });
+
+  const verificationBreakdownMap = {};
+  verificationBreakdown.forEach((item) => {
+    verificationBreakdownMap[item.verificationStatus] = parseInt(item.count);
   });
 
   res.json({
@@ -592,18 +768,13 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
         updatedAt: batch.updatedAt,
       },
       counts: countsMap,
-      sampleRecords: sampleRecords.map((record) => ({
-        id: record.id,
-        status: record.status,
-        email: record.normalizedEmail,
-        name: record.name,
-        failureReason: record.failureReason,
-        createdAt: record.createdAt,
-      })),
+      verification: verificationStats,
+      verificationBreakdown: verificationBreakdownMap,
+      sampleRecords: mappedSampleRecords,
+      allRecords: mappedAllRecords,
     },
   });
 });
-
 // Get user's batches
 export const getUserBatches = asyncHandler(async (req, res) => {
   const page = parseInt(req.query.page) || 1;
@@ -629,9 +800,21 @@ export const getUserBatches = asyncHandler(async (req, res) => {
     ],
   });
 
+  // 🔹 Add verification stats per batch
+  const enrichedBatches = await Promise.all(
+    batches.map(async (batch) => {
+      const verification = await getBatchVerificationStats(batch.id);
+
+      return {
+        ...batch.toJSON(),
+        verification, // ✅ verified / invalid / unverified
+      };
+    }),
+  );
+
   res.status(200).json({
     success: true,
-    data: batches,
+    data: enrichedBatches,
     pagination: {
       page,
       limit,
@@ -639,4 +822,125 @@ export const getUserBatches = asyncHandler(async (req, res) => {
       pages: Math.ceil(count / limit),
     },
   });
+});
+
+// Delete batch
+export const deleteBatch = asyncHandler(async (req, res) => {
+  const batch = await ListUploadBatch.findOne({
+    where: {
+      id: req.params.batchId,
+      userId: req.user.id,
+    },
+  });
+
+  if (!batch) {
+    return res.status(404).json({
+      success: false,
+      message: "Batch not found",
+    });
+  }
+
+  // Delete associated records
+  await ListUploadRecord.destroy({
+    where: { batchId: batch.id },
+  });
+
+  // Delete batch
+  await batch.destroy();
+
+  res.json({
+    success: true,
+    message: "Batch deleted successfully",
+  });
+});
+
+// Retry batch
+export const retryBatch = asyncHandler(async (req, res) => {
+  const batch = await ListUploadBatch.findOne({
+    where: {
+      id: req.params.batchId,
+      userId: req.user.id,
+      status: "failed",
+    },
+  });
+
+  if (!batch) {
+    return res.status(404).json({
+      success: false,
+      message: "Failed batch not found",
+    });
+  }
+
+  // Reset batch status
+  await batch.update({
+    status: "uploaded",
+    errorReason: null,
+  });
+
+  // Reprocess the file
+  await processUploadedFile(batch.id, req.user.id);
+
+  res.json({
+    success: true,
+    message: "Batch retry initiated",
+  });
+});
+
+// Export batch
+export const exportBatch = asyncHandler(async (req, res) => {
+  const { format = "csv" } = req.query;
+  const batchId = req.params.batchId;
+
+  const batch = await ListUploadBatch.findOne({
+    where: {
+      id: batchId,
+      userId: req.user.id,
+    },
+  });
+
+  if (!batch) {
+    return res.status(404).json({
+      success: false,
+      message: "Batch not found",
+    });
+  }
+
+  const records = await ListUploadRecord.findAll({
+    where: { batchId },
+    attributes: ["normalizedEmail", "name", "status", "createdAt"],
+  });
+
+  // Convert to requested format
+  let content, contentType, extension;
+
+  switch (format.toLowerCase()) {
+    case "csv":
+      content = convertToCSV(records);
+      contentType = "text/csv";
+      extension = "csv";
+      break;
+    case "json":
+      content = JSON.stringify(records, null, 2);
+      contentType = "application/json";
+      extension = "json";
+      break;
+    case "xlsx":
+      content = convertToXLSX(records);
+      contentType =
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      extension = "xlsx";
+      break;
+    default:
+      return res.status(400).json({
+        success: false,
+        message: "Unsupported export format",
+      });
+  }
+
+  res.setHeader("Content-Type", contentType);
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename=batch-${batchId}.${extension}`,
+  );
+  res.send(content);
 });

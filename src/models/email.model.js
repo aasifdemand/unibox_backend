@@ -29,12 +29,32 @@ const Email = sequelize.define(
     },
 
     metadata: DataTypes.JSONB,
+    // Add senderType field
+    senderType: {
+      type: DataTypes.ENUM("gmail", "outlook", "smtp"),
+      allowNull: false,
+      defaultValue: "smtp",
+    },
+
+    deliveryProvider: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    deliveryConfidence: {
+      type: DataTypes.FLOAT,
+      allowNull: true,
+    },
+    routedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
   },
+
   {
     tableName: "emails",
     timestamps: true,
     updatedAt: false,
-  }
+  },
 );
 
 export default Email;

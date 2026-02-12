@@ -1,4 +1,3 @@
-// src/workers/campaign-scheduler.worker.js
 import "../models/index.js";
 import Campaign from "../models/campaign.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
@@ -15,7 +14,7 @@ const log = (level, message, meta = {}) =>
       level,
       message,
       ...meta,
-    })
+    }),
   );
 
 (async () => {
@@ -72,9 +71,9 @@ const log = (level, message, meta = {}) =>
               JSON.stringify({
                 campaignId: campaign.id,
                 recipientId: r.id,
-              })
+              }),
             ),
-            { persistent: true }
+            { persistent: true },
           );
 
           await r.update({

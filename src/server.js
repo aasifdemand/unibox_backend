@@ -11,10 +11,12 @@ async function startServer() {
   try {
     await sequelize.authenticate();
     console.log("PostgreSQL connected");
+    sequelize.query("SELECT current_database();").then(([res]) => {
+      console.log("Connected DB:", res);
+    });
 
-    await sequelize.sync({ alter: true });
+    await sequelize.sync();
 
-    
     app.listen(PORT, () => {
       console.log(`API server running on port ${PORT} ❤️‍🔥`);
       console.log(`Swagger docs: http://localhost:${PORT}/api-docs 📝`);
