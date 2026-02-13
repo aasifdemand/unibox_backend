@@ -564,13 +564,6 @@ async function ingestGmailReplies(gmailSender, messageIdMap) {
   }
 }
 
-/* =========================
-   OUTLOOK INGESTION - FIXED TO MATCH GMAIL PATTERN
-   ✅ CHECKS ALL FOLDERS (Inbox, Junk, Trash, Archive)
-   ✅ USES SAME MATCHING LOGIC AS GMAIL
-   ✅ PROPER TOKEN HANDLING
-   ✅ CORRECT PROVIDER MESSAGE ID MATCHING
-========================= */
 async function ingestOutlookReplies(outlookSender, messageIdMap) {
   const senderId = outlookSender.id;
 
@@ -589,18 +582,13 @@ async function ingestOutlookReplies(outlookSender, messageIdMap) {
   }
 
   try {
-    // ✅ 1. GET FRESH TOKEN (same as Gmail pattern)
     const freshSender = await OutlookSender.findByPk(senderId);
-    if (!freshSender) {
-      log("ERROR", "❌ Could not reload Outlook sender", { senderId });
-      return;
-    }
+    if (!freshSender) return;
 
     const token = await getValidMicrosoftToken(freshSender);
     if (!token) {
       log("ERROR", "❌ Failed to get valid Microsoft token", {
         email: outlookSender.email,
-        senderId,
       });
       return;
     }
@@ -610,95 +598,54 @@ async function ingestOutlookReplies(outlookSender, messageIdMap) {
       keepAlive: true,
     });
 
-    // ✅ 2. CHECK ALL FOLDERS WHERE REPLIES CAN BE (same as before)
-    const foldersToCheck = [
-      { name: "inbox", path: "inbox" },
-      { name: "junkemail", path: "junkemail" },
-      { name: "deleteditems", path: "deleteditems" },
-      { name: "archive", path: "archive" },
-    ];
+    const folders = ["inbox", "junkemail", "deleteditems", "archive"];
+    const checkFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
     let allMessages = [];
-    const checkFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 days
 
-    for (const folder of foldersToCheck) {
+    for (const folder of folders) {
       try {
-        const endpoint = `https://graph.microsoft.com/v1.0/me/mailFolders/${folder.path}/messages`;
+        const endpoint = `https://graph.microsoft.com/v1.0/me/mailFolders/${folder}/messages`;
 
         const response = await axios.get(endpoint, {
           headers: {
             Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
           },
           params: {
-            $top: 250,
+            $top: 200,
             $orderby: "receivedDateTime desc",
             $filter: `receivedDateTime ge ${checkFrom.toISOString()}`,
             $select:
-              "id,subject,from,toRecipients,ccRecipients,bccRecipients,body,bodyPreview,conversationId,internetMessageId,receivedDateTime,isRead,parentFolderId",
+              "id,subject,from,toRecipients,ccRecipients,body,bodyPreview,conversationId,internetMessageId,internetMessageHeaders,receivedDateTime",
           },
           httpsAgent: agent,
           timeout: 15000,
         });
 
         const messages = response.data.value || [];
-
-        // Add folder info
-        messages.forEach((msg) => {
-          msg._folder = folder.name;
-          allMessages.push(msg);
-        });
-
-        log("DEBUG", `📁 Found ${messages.length} messages in ${folder.name}`);
-      } catch (folderErr) {
-        log("WARN", `Failed to fetch ${folder.name} folder`, {
-          error: folderErr.message,
-          status: folderErr.response?.status,
+        messages.forEach((m) => (m._folder = folder));
+        allMessages.push(...messages);
+      } catch (err) {
+        log("WARN", `⚠️ Failed fetching ${folder}`, {
+          error: err.message,
         });
       }
     }
 
-    // Remove duplicates
     const uniqueMessages = Array.from(
-      new Map(allMessages.map((msg) => [msg.id, msg])).values(),
+      new Map(allMessages.map((m) => [m.id, m])).values(),
     );
-
-    log("INFO", "📊 Outlook messages found across all folders:", {
-      total: uniqueMessages.length,
-      inbox: allMessages.filter((m) => m._folder === "inbox").length,
-      junk: allMessages.filter((m) => m._folder === "junkemail").length,
-      trash: allMessages.filter((m) => m._folder === "deleteditems").length,
-      archive: allMessages.filter((m) => m._folder === "archive").length,
-    });
-
-    if (uniqueMessages.length === 0) {
-      log("DEBUG", "No messages found in any folder");
-      return;
-    }
 
     let processedCount = 0;
     let skippedCount = 0;
 
-    // ✅ 3. GET CAMPAIGN IDs FOR FILTERING (same as Gmail)
-    const campaignIds = new Set();
-    for (const emailId of messageIdMap.values()) {
-      const email = await Email.findByPk(emailId, {
-        attributes: ["campaignId"],
-      });
-      if (email?.campaignId) campaignIds.add(email.campaignId);
-    }
-
-    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-
-    // ✅ 4. PROCESS EACH MESSAGE (same pattern as Gmail)
     for (const msg of uniqueMessages) {
       try {
-        // Check if already processed
+        // Prevent duplicate processing
         const existingReply = await ReplyEvent.findOne({
           where: {
             [Op.or]: [
-              { "metadata.messageId": msg.id },
-              { "metadata.internetMessageId": msg.internetMessageId },
+              { "metadata.messageId": msg.internetMessageId },
               { "metadata.threadId": msg.conversationId },
             ],
           },
@@ -709,28 +656,20 @@ async function ingestOutlookReplies(outlookSender, messageIdMap) {
           continue;
         }
 
-        // Get all recipients
+        const senderEmailLower = outlookSender.email.toLowerCase();
+
         const toRecipients =
           msg.toRecipients?.map((r) =>
             r.emailAddress?.address?.toLowerCase(),
           ) || [];
+
         const ccRecipients =
           msg.ccRecipients?.map((r) =>
             r.emailAddress?.address?.toLowerCase(),
           ) || [];
-        const bccRecipients =
-          msg.bccRecipients?.map((r) =>
-            r.emailAddress?.address?.toLowerCase(),
-          ) || [];
 
-        const allRecipients = [
-          ...toRecipients,
-          ...ccRecipients,
-          ...bccRecipients,
-        ];
-        const senderEmailLower = outlookSender.email.toLowerCase();
+        const allRecipients = [...toRecipients, ...ccRecipients];
 
-        // ✅ 5. SKIP IF NOT SENT TO OUR SENDER (same as Gmail)
         if (!allRecipients.includes(senderEmailLower)) {
           skippedCount++;
           continue;
@@ -738,127 +677,66 @@ async function ingestOutlookReplies(outlookSender, messageIdMap) {
 
         const from = msg.from?.emailAddress?.address?.toLowerCase();
 
-        // ✅ 6. SKIP AUTO-REPLIES AND SENDER (same as Gmail)
         if (
           !from ||
           from === senderEmailLower ||
           from.includes("noreply") ||
-          from.includes("no-reply") ||
-          from.includes("mailer-daemon") ||
-          from.includes("postmaster")
+          from.includes("mailer-daemon")
         ) {
           skippedCount++;
           continue;
         }
 
-        // ✅ 7. MATCHING STRATEGIES - IDENTICAL TO GMAIL PATTERN
+        /* =========================
+           HEADER MATCHING (CRITICAL)
+        ========================= */
+
+        const headers = msg.internetMessageHeaders || [];
+
+        const inReplyTo = headers.find(
+          (h) => h.name.toLowerCase() === "in-reply-to",
+        )?.value;
+
+        const references = headers.find(
+          (h) => h.name.toLowerCase() === "references",
+        )?.value;
+
+        const threadIds = [
+          inReplyTo,
+          ...(references ? references.split(/\s+/) : []),
+        ].filter(Boolean);
+
         let emailId = null;
         let matchedVia = null;
 
-        // Strategy 1: Match by internetMessageId (equivalent to Gmail's Message-ID)
-        if (msg.internetMessageId) {
-          // Try exact match
-          if (messageIdMap.has(msg.internetMessageId)) {
-            emailId = messageIdMap.get(msg.internetMessageId);
-            matchedVia = "internetMessageId (exact)";
+        // Strategy 1: In-Reply-To / References
+        for (const ref of threadIds) {
+          const cleanRef = ref.replace(/[<>]/g, "");
+
+          if (messageIdMap.has(ref)) {
+            emailId = messageIdMap.get(ref);
+            matchedVia = "inReplyTo exact";
+            break;
           }
-          // Try without brackets
-          else {
-            const cleanId = msg.internetMessageId.replace(/[<>]/g, "");
-            if (messageIdMap.has(cleanId)) {
-              emailId = messageIdMap.get(cleanId);
-              matchedVia = "internetMessageId (clean)";
-            }
+
+          if (messageIdMap.has(cleanRef)) {
+            emailId = messageIdMap.get(cleanRef);
+            matchedVia = "inReplyTo clean";
+            break;
           }
         }
 
-        // Strategy 2: Match by conversationId (equivalent to Gmail's thread ID)
+        // Strategy 2: conversationId fallback
         if (!emailId && msg.conversationId) {
-          // Try exact match in providerMessageId
           for (const [key, value] of messageIdMap.entries()) {
             if (
               key.includes(msg.conversationId) ||
               msg.conversationId.includes(key)
             ) {
               emailId = value;
-              matchedVia = "conversationId (map match)";
+              matchedVia = "conversationId";
               break;
             }
-          }
-
-          // Try database lookup
-          if (!emailId) {
-            const email = await Email.findOne({
-              where: {
-                senderId: outlookSender.id,
-                recipientEmail: from,
-                campaignId: { [Op.in]: Array.from(campaignIds) },
-                createdAt: { [Op.gte]: ninetyDaysAgo },
-                [Op.or]: [
-                  { "metadata.conversationId": msg.conversationId },
-                  {
-                    providerMessageId: { [Op.like]: `%${msg.conversationId}%` },
-                  },
-                ],
-              },
-              order: [["createdAt", "DESC"]],
-            });
-
-            if (email) {
-              emailId = email.id;
-              matchedVia = "conversationId (db lookup)";
-            }
-          }
-        }
-
-        // Strategy 3: Match by subject (same as Gmail)
-        if (!emailId && msg.subject && /^re:/i.test(msg.subject)) {
-          const baseSubject = msg.subject
-            .replace(/^re:\s*/i, "")
-            .replace(/^fwd:\s*/i, "")
-            .replace(/^aw:\s*/i, "")
-            .trim();
-
-          const email = await Email.findOne({
-            where: {
-              senderId: outlookSender.id,
-              recipientEmail: from,
-              campaignId: { [Op.in]: Array.from(campaignIds) },
-              createdAt: { [Op.gte]: ninetyDaysAgo },
-              [Op.or]: [
-                { "metadata.subject": { [Op.iLike]: `%${baseSubject}%` } },
-                { subject: { [Op.iLike]: `%${baseSubject}%` } },
-              ],
-            },
-            order: [["createdAt", "DESC"]],
-          });
-
-          if (email) {
-            emailId = email.id;
-            matchedVia = "subject fallback";
-          }
-        }
-
-        // Strategy 4: Recipient only (last resort - same as Gmail)
-        if (!emailId) {
-          const email = await Email.findOne({
-            where: {
-              senderId: outlookSender.id,
-              recipientEmail: from,
-              campaignId: { [Op.in]: Array.from(campaignIds) },
-              createdAt: { [Op.gte]: ninetyDaysAgo },
-            },
-            order: [["createdAt", "DESC"]],
-          });
-
-          if (email) {
-            emailId = email.id;
-            matchedVia = "recipient only (last resort)";
-            log("WARN", "⚠️ Weak match - recipient only", {
-              emailId,
-              from,
-              campaignId: email.campaignId,
-            });
           }
         }
 
@@ -873,97 +751,54 @@ async function ingestOutlookReplies(outlookSender, messageIdMap) {
           continue;
         }
 
-        // ✅ 8. VERIFY RECIPIENT MATCH (same as Gmail)
         const normalizedRecipient = normalizeEmailForMatching(
           email.recipientEmail,
         );
         const normalizedFrom = normalizeEmailForMatching(from);
 
         if (normalizedRecipient !== normalizedFrom) {
-          log("WARN", "⚠️ Recipient mismatch - skipping", {
-            expected: email.recipientEmail,
-            actual: from,
-            emailId,
-          });
           skippedCount++;
           continue;
         }
 
-        log("INFO", "✅ Found matching campaign email!", {
-          emailId: email.id,
+        log("INFO", "✅ Outlook reply matched", {
+          emailId,
           from,
           subject: msg.subject,
           matchedVia,
-          campaignId: email.campaignId,
-          folder: msg._folder,
         });
 
-        // ✅ 9. GENERATE PREVIEW (if needed)
-        let preview = msg.bodyPreview || "";
-        if (!preview && msg.body?.content) {
-          preview = msg.body.content
-            .replace(/<[^>]*>?/gm, " ")
-            .replace(/&nbsp;/g, " ")
-            .replace(/\s+/g, " ")
-            .trim()
-            .substring(0, 200);
-          if (preview.length >= 200) preview += "...";
-        }
-
-        // ✅ 10. STORE METADATA FOR FUTURE MATCHING (same as Gmail)
-        if (msg.conversationId) {
-          await email.update({
-            metadata: {
-              ...email.metadata,
-              conversationId: msg.conversationId,
-              internetMessageId: msg.internetMessageId,
-            },
-          });
-        }
-
-        // ✅ 11. PROCESS THE REPLY (same as Gmail)
         await processReply({
           sender: { ...outlookSender.toJSON(), type: "outlook" },
           email,
           reply: {
             from,
             subject: msg.subject || "(no subject)",
-            body: msg.body?.content || preview,
+            body: msg.body?.content || msg.bodyPreview,
             receivedAt: new Date(msg.receivedDateTime),
-            inReplyTo: msg.internetMessageId,
-            messageId: msg.internetMessageId || msg.id,
+            inReplyTo,
+            messageId: msg.internetMessageId,
             threadId: msg.conversationId,
           },
         });
 
         processedCount++;
-
-        log("INFO", "✅ Successfully processed reply from folder", {
-          messageId: msg.id,
-          emailId: email.id,
-          folder: msg._folder,
-        });
-      } catch (e) {
-        log("ERROR", "❌ Message processing error", {
-          error: e.message,
-          messageId: msg?.id,
-          folder: msg?._folder,
-        });
+      } catch (err) {
         skippedCount++;
+        log("ERROR", "❌ Outlook message processing failed", {
+          error: err.message,
+        });
       }
     }
 
-    log("INFO", "📬 Outlook folder scan complete", {
-      email: outlookSender.email,
-      totalMessages: uniqueMessages.length,
+    log("INFO", "📬 Outlook ingestion complete", {
       processedCount,
       skippedCount,
+      total: uniqueMessages.length,
     });
   } catch (err) {
     log("ERROR", "❌ Outlook ingestion failed", {
       error: err.message,
-      sender: outlookSender.email,
-      status: err.response?.status,
     });
   }
 }
@@ -1274,7 +1109,8 @@ const POLL_INTERVAL_MS = 60 * 1000;
           const emails = await Email.findAll({
             where: {
               senderId: outlookSender.id,
-              status: ["sent", "routed"],
+              senderType: "outlook",
+              status: { [Op.in]: ["sent", "routed"] },
               providerMessageId: { [Op.ne]: null },
             },
             limit: 1000,
@@ -1288,7 +1124,6 @@ const POLL_INTERVAL_MS = 60 * 1000;
             });
             continue;
           }
-
           const messageIdMap = new Map();
           emails.forEach((e) => {
             if (e.providerMessageId) {

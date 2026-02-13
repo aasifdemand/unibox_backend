@@ -8,13 +8,14 @@ import {
   testSender,
   refreshSenderToken,
   revokeSenderAccess,
+  testSmtpConnection,
+  testImapConnection,
 } from "../controllers/sender.controller.js";
 import GmailSender from "../models/gmail-sender.model.js";
 import OutlookSender from "../models/outlook-sender.model.js";
 import passportGoogle from "../config/passportgoogle-senders.js";
 import passportMicrosoft from "../config/passport-microsoft.config.js";
-import { testSmtpConnection } from "../utils/smtp-tester.js";
-import { testImapConnection } from "../utils/imap-tester.js";
+
 /**
  * @swagger
  * tags:
@@ -475,14 +476,7 @@ router.post("/:senderId/refresh-token", protect, refreshSenderToken);
  */
 router.post("/:senderId/revoke", protect, revokeSenderAccess);
 
-// =========================
-// TEST SMTP CONNECTION
-// =========================
 router.post("/test-smtp", protect, testSmtpConnection);
-
-// =========================
-// TEST IMAP CONNECTION
-// =========================
 router.post("/test-imap", protect, testImapConnection);
 
 export default router;

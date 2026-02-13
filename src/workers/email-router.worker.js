@@ -1,6 +1,5 @@
 import "../models/index.js";
 import Redis from "ioredis";
-import { Op } from "sequelize";
 import Email from "../models/email.model.js";
 import GmailSender from "../models/gmail-sender.model.js";
 import OutlookSender from "../models/outlook-sender.model.js";

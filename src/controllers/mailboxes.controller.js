@@ -313,26 +313,30 @@ const mapOutlookFolderToType = (folderId, folderName) => {
   );
 };
 
-// =========================
-// GET ALL MAILBOXES
-// =========================
 export const getMailboxes = asyncHandler(async (req, res) => {
   const userId = req.user.id;
 
   const [gmailSenders, outlookSenders, smtpSenders] = await Promise.all([
     GmailSender.findAll({
       where: { userId },
-      attributes: { exclude: ["accessToken", "refreshToken", "googleProfile"] },
+      attributes: {
+        exclude: ["accessToken", "refreshToken", "googleProfile"],
+        include: ["googleId"], // ✅ Include googleId for type detection
+      },
     }),
     OutlookSender.findAll({
       where: { userId },
       attributes: {
         exclude: ["accessToken", "refreshToken", "microsoftProfile"],
+        include: ["microsoftId"], // ✅ Include microsoftId for type detection
       },
     }),
     SmtpSender.findAll({
       where: { userId },
-      attributes: { exclude: ["smtpPassword", "imapPassword"] },
+      attributes: {
+        exclude: ["smtpPassword", "imapPassword"],
+        include: ["smtpHost"], // ✅ Include smtpHost for type detection
+      },
     }),
   ]);
 
@@ -350,6 +354,10 @@ export const getMailboxes = asyncHandler(async (req, res) => {
       lastSyncAt: s.lastUsedAt,
       expiresAt: s.expiresAt,
       stats: { dailySent: s.dailySentCount || 0 },
+      // Include detection fields
+      googleId: s.googleId,
+      microsoftId: null,
+      smtpHost: null,
     })),
     ...outlookSenders.map((s) => ({
       id: s.id,
@@ -364,6 +372,10 @@ export const getMailboxes = asyncHandler(async (req, res) => {
       lastSyncAt: s.lastUsedAt,
       expiresAt: s.expiresAt,
       stats: { dailySent: s.dailySentCount || 0 },
+      // Include detection fields
+      googleId: null,
+      microsoftId: s.microsoftId,
+      smtpHost: null,
     })),
     ...smtpSenders.map((s) => ({
       id: s.id,
@@ -377,6 +389,10 @@ export const getMailboxes = asyncHandler(async (req, res) => {
       updatedAt: s.updatedAt,
       lastSyncAt: s.lastInboxSyncAt || s.lastUsedAt,
       stats: { dailySent: s.dailySentCount || 0 },
+      // Include detection fields
+      googleId: null,
+      microsoftId: null,
+      smtpHost: s.smtpHost,
     })),
   ];
 
