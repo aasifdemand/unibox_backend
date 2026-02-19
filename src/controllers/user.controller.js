@@ -1,4 +1,4 @@
-import { asyncHandler } from "../helpers/async-handler.js"
+import { asyncHandler } from "../helpers/async-handler.js";
 import AppError from "../utils/app-error.js";
 import User from "../models/user.model.js";
 
@@ -9,6 +9,8 @@ export const getProfile = asyncHandler(async (req, res) => {
       name: req.user.name,
       email: req.user.email,
       role: req.user.role,
+      isVerified: req.user.isVerified,
+      googleId: req.user.googleId,
     },
   });
 });

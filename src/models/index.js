@@ -268,6 +268,14 @@ GlobalEmailRegistry.belongsTo(ListUploadRecord, {
   constraints: false,
 });
 
+Email.hasMany(ReplyEvent, { foreignKey: "emailId", as: "replies" });
+ReplyEvent.belongsTo(Email, { foreignKey: "emailId", as: "email" });
+
+Email.belongsTo(CampaignRecipient, {
+  foreignKey: "recipientId",
+  as: "recipient",
+});
+CampaignRecipient.hasMany(Email, { foreignKey: "recipientId", as: "emails" });
 /* =====================================================
    HELPER FUNCTIONS
 ===================================================== */

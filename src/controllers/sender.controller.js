@@ -9,6 +9,8 @@ import SmtpSender from "../models/smtp-sender.model.js";
 import { testGmailConnection } from "../utils/gmail-tester.js";
 import { testOutlookConnection } from "../utils/outlook-tester.js";
 
+import { verifySmtp, verifyImap } from "../services/smtp-imap.service.js";
+
 // =========================
 // CREATE SMTP SENDER
 // =========================
@@ -69,12 +71,12 @@ export const createSender = asyncHandler(async (req, res) => {
 
   // Test SMTP connection
   try {
-    await testSmtpConnection({
-      smtpHost,
-      smtpPort,
-      smtpSecure,
-      smtpUser,
-      smtpPass: smtpPassword,
+    await verifySmtp({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpSecure,
+      user: smtpUser,
+      password: smtpPassword,
     });
   } catch (err) {
     throw new AppError(`SMTP connection failed: ${err.message}`, 400);
@@ -82,12 +84,12 @@ export const createSender = asyncHandler(async (req, res) => {
 
   // Test IMAP connection
   try {
-    await testImapConnection({
-      imapHost,
-      imapPort,
-      imapSecure,
-      imapUser,
-      imapPass: imapPassword,
+    await verifyImap({
+      host: imapHost,
+      port: imapPort,
+      secure: imapSecure,
+      user: imapUser,
+      password: imapPassword,
     });
   } catch (err) {
     throw new AppError(`IMAP connection failed: ${err.message}`, 400);
@@ -562,92 +564,34 @@ export const getSender = asyncHandler(async (req, res) => {
 // TEST SMTP CONNECTION ONLY
 // =========================
 export const testSmtpConnection = asyncHandler(async (req, res) => {
-  const { host, port, secure, user, password } = req.body;
+  const { host, port, secure, user, password } = req.body || {};
 
   if (!host || !port || !user || !password) {
     throw new AppError("Missing required SMTP fields", 400);
   }
 
-  const nodemailer = (await import("nodemailer")).default;
+  await verifySmtp({ host, port, secure, user, password });
 
-  const transporter = nodemailer.createTransport({
-    host,
-    port: parseInt(port),
-    secure: secure === true || secure === "true",
-    auth: {
-      user,
-      pass: password,
-    },
-    tls: {
-      rejectUnauthorized: false,
-    },
-    connectionTimeout: 10000,
-    socketTimeout: 10000,
+  res.json({
+    success: true,
+    message: "SMTP connection successful",
   });
-
-  try {
-    await transporter.verify();
-    res.json({
-      success: true,
-      message: "SMTP connection successful",
-    });
-  } catch (error) {
-    console.error("SMTP test error:", error.message);
-    throw new AppError(`SMTP connection failed: ${error.message}`, 400);
-  }
 });
 
 // =========================
 // TEST IMAP CONNECTION ONLY
 // =========================
 export const testImapConnection = asyncHandler(async (req, res) => {
-  const { host, port, secure, user, password } = req.body;
+  const { host, port, secure, user, password } = req.body || {};
 
   if (!host || !port || !user || !password) {
     throw new AppError("Missing required IMAP fields", 400);
   }
 
-  const Imap = (await import("imap")).default;
+  await verifyImap({ host, port, secure, user, password });
 
-  return new Promise((resolve, reject) => {
-    const imap = new Imap({
-      user,
-      password,
-      host,
-      port: parseInt(port),
-      tls: secure === true || secure === "true",
-      tlsOptions: { rejectUnauthorized: false },
-      authTimeout: 10000,
-    });
-
-    const timeout = setTimeout(() => {
-      imap.end();
-      reject(new AppError("IMAP connection timeout", 408));
-    }, 15000);
-
-    imap.once("ready", () => {
-      clearTimeout(timeout);
-      imap.end();
-      res.json({
-        success: true,
-        message: "IMAP connection successful",
-      });
-      resolve();
-    });
-
-    imap.once("error", (err) => {
-      clearTimeout(timeout);
-      imap.end();
-      console.error("IMAP test error:", err.message);
-      reject(new AppError(`IMAP connection failed: ${err.message}`, 400));
-    });
-
-    imap.once("end", () => {
-      clearTimeout(timeout);
-    });
-
-    imap.connect();
-  }).catch((err) => {
-    throw err;
+  res.json({
+    success: true,
+    message: "IMAP connection successful",
   });
 });

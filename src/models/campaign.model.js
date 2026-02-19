@@ -61,6 +61,21 @@ const Campaign = sequelize.define(
       allowNull: true,
     },
 
+    // 👇 ADD THESE TRACKING FIELDS
+    trackOpens: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true,
+    },
+    trackClicks: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true,
+    },
+    unsubscribeLink: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true,
+    },
+
+    // Stats fields
     totalSent: {
       type: DataTypes.INTEGER,
       defaultValue: 0,
@@ -69,6 +84,15 @@ const Campaign = sequelize.define(
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
+    totalOpens: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
+    totalClicks: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
+
     completedAt: {
       type: DataTypes.DATE,
     },

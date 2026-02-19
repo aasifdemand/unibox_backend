@@ -1,176 +1,562 @@
-import { Sequelize, Op } from "sequelize";
+import { Op, Sequelize } from "sequelize";
 import Campaign from "../models/campaign.model.js";
-import CampaignRecipient from "../models/campaign-recipient.model.js";
 import CampaignSend from "../models/campaign-send.model.js";
 import Email from "../models/email.model.js";
 import ReplyEvent from "../models/reply-event.model.js";
+import BounceEvent from "../models/bounce-event.model.js";
+import { asyncHandler } from "../helpers/async-handler.js";
+import GmailSender from "../models/gmail-sender.model.js";
+import OutlookSender from "../models/outlook-sender.model.js";
+import SmtpSender from "../models/smtp-sender.model.js";
 
-/* ======================================================
-   CAMPAIGN OVERVIEW
-====================================================== */
-export const campaignOverview = async (req, res) => {
-  const { campaignId } = req.params;
+// =========================
+// GLOBAL OVERVIEW
+// =========================
+export const getGlobalOverview = asyncHandler(async (req, res) => {
+  const userId = req.user.id;
 
-  const campaign = await Campaign.findByPk(campaignId);
-  if (!campaign) {
-    return res.status(404).json({
-      success: false,
-      message: "Campaign not found",
-    });
-  }
+  const [
+    totalCampaigns,
+    activeCampaigns,
+    totalEmailsSent,
+    totalReplies,
+    totalBounces,
+    avgOpenRate,
+    avgReplyRate,
+  ] = await Promise.all([
+    // Total campaigns
+    Campaign.count({ where: { userId } }),
 
-  const [sentCount, repliedCount, recipientStats, sendStats] =
-    await Promise.all([
-      CampaignSend.count({
-        where: { campaignId, status: "sent" },
-      }),
-      ReplyEvent.count({
-        include: [
-          {
-            model: Email,
-            where: { campaignId },
-            attributes: [],
-          },
+    // Active campaigns
+    Campaign.count({
+      where: {
+        userId,
+        status: { [Op.in]: ["running", "sending"] },
+      },
+    }),
+
+    // Total emails sent
+    CampaignSend.count({
+      include: [
+        {
+          model: Campaign,
+          where: { userId },
+          attributes: [],
+        },
+      ],
+      where: { status: "sent" },
+    }),
+
+    // Total replies
+    ReplyEvent.count({
+      include: [
+        {
+          model: Email,
+          include: [
+            {
+              model: Campaign,
+              where: { userId },
+              attributes: [],
+            },
+          ],
+        },
+      ],
+    }),
+
+    // Total bounces
+    BounceEvent.count({
+      include: [
+        {
+          model: Email,
+          include: [
+            {
+              model: Campaign,
+              where: { userId },
+              attributes: [],
+            },
+          ],
+        },
+      ],
+    }),
+
+    // Average open rate
+    Campaign.findOne({
+      where: { userId },
+      attributes: [
+        [
+          Sequelize.fn(
+            "AVG",
+            Sequelize.literal(
+              'CASE WHEN "totalSent" > 0 THEN ("totalOpens"::float / "totalSent") * 100 ELSE 0 END',
+            ),
+          ),
+          "avgOpenRate",
         ],
-      }),
-      CampaignRecipient.findAll({
-        where: { campaignId },
-        attributes: ["status", [Sequelize.fn("COUNT", "*"), "count"]],
-        group: ["status"],
-      }),
-      CampaignSend.findAll({
-        where: { campaignId },
-        attributes: ["status", [Sequelize.fn("COUNT", "*"), "count"]],
-        group: ["status"],
-      }),
-    ]);
+      ],
+      raw: true,
+    }),
+
+    // Average reply rate
+    Campaign.findOne({
+      where: { userId },
+      attributes: [
+        [
+          Sequelize.fn(
+            "AVG",
+            Sequelize.literal(
+              'CASE WHEN "totalSent" > 0 THEN ("totalReplied"::float / "totalSent") * 100 ELSE 0 END',
+            ),
+          ),
+          "avgReplyRate",
+        ],
+      ],
+      raw: true,
+    }),
+  ]);
 
   res.json({
     success: true,
     data: {
-      campaignId,
-      name: campaign.name,
-      status: campaign.status,
-      scheduledAt: campaign.scheduledAt,
-      completedAt: campaign.completedAt,
-      totals: {
-        sent: sentCount,
-        replied: repliedCount,
-      },
-      recipients: recipientStats,
-      sends: sendStats,
+      totalCampaigns,
+      activeCampaigns,
+      totalEmailsSent,
+      totalReplies,
+      totalBounces,
+      avgOpenRate: Math.round(avgOpenRate?.avgOpenRate || 0),
+      avgReplyRate: Math.round(avgReplyRate?.avgReplyRate || 0),
     },
   });
-};
+});
 
-/* ======================================================
-   STEP-WISE ANALYTICS
-====================================================== */
-export const campaignStepAnalytics = async (req, res) => {
-  const { campaignId } = req.params;
+// =========================
+// PERFORMANCE METRICS
+// =========================
+export const getPerformanceMetrics = asyncHandler(async (req, res) => {
+  const userId = req.user.id;
 
-  const steps = await CampaignSend.findAll({
-    where: { campaignId },
-    attributes: [
-      "step",
-      [Sequelize.fn("COUNT", Sequelize.col("CampaignSend.id")), "sent"],
-      [Sequelize.fn("COUNT", Sequelize.col("Email.id")), "replied"],
-    ],
-    include: [
-      {
-        model: Email,
-        required: false,
-        where: { status: "replied" },
-        attributes: [],
-      },
-    ],
-    group: ["step"],
-    order: [["step", "ASC"]],
-  });
-
-  res.json({
-    success: true,
-    data: steps,
-  });
-};
-
-/* ======================================================
-   RECIPIENT-LEVEL ANALYTICS
-====================================================== */
-export const campaignRecipientsAnalytics = async (req, res) => {
-  const { campaignId } = req.params;
-
-  const recipients = await CampaignRecipient.findAll({
-    where: { campaignId },
+  const campaigns = await Campaign.findAll({
+    where: { userId },
     attributes: [
       "id",
-      "email",
-      "status",
-      "currentStep",
-      "lastSentAt",
-      "repliedAt",
+      "name",
+      "totalSent",
+      "totalOpens",
+      "totalClicks",
+      "totalReplied",
+      [
+        Sequelize.literal(
+          'CASE WHEN "totalSent" > 0 THEN ("totalOpens"::float / "totalSent") * 100 ELSE 0 END',
+        ),
+        "openRate",
+      ],
+      [
+        Sequelize.literal(
+          'CASE WHEN "totalSent" > 0 THEN ("totalClicks"::float / "totalSent") * 100 ELSE 0 END',
+        ),
+        "clickRate",
+      ],
+      [
+        Sequelize.literal(
+          'CASE WHEN "totalSent" > 0 THEN ("totalReplied"::float / "totalSent") * 100 ELSE 0 END',
+        ),
+        "replyRate",
+      ],
     ],
-    order: [["createdAt", "ASC"]],
+    order: [["createdAt", "DESC"]],
+    limit: 100,
+  });
+
+  // Calculate aggregates
+  const totals = campaigns.reduce(
+    (acc, c) => ({
+      totalSent: acc.totalSent + c.totalSent,
+      totalOpens: acc.totalOpens + c.totalOpens,
+      totalClicks: acc.totalClicks + c.totalClicks,
+      totalReplied: acc.totalReplied + c.totalReplied,
+    }),
+    { totalSent: 0, totalOpens: 0, totalClicks: 0, totalReplied: 0 },
+  );
+
+  res.json({
+    success: true,
+    data: {
+      campaigns,
+      aggregates: {
+        ...totals,
+        avgOpenRate:
+          totals.totalSent > 0
+            ? Math.round((totals.totalOpens / totals.totalSent) * 100)
+            : 0,
+        avgClickRate:
+          totals.totalSent > 0
+            ? Math.round((totals.totalClicks / totals.totalSent) * 100)
+            : 0,
+        avgReplyRate:
+          totals.totalSent > 0
+            ? Math.round((totals.totalReplied / totals.totalSent) * 100)
+            : 0,
+      },
+    },
+  });
+});
+
+// =========================
+// TIMELINE DATA - ONLY ACTUAL DATA
+// =========================
+export const getTimelineData = asyncHandler(async (req, res) => {
+  const userId = req.user.id;
+  const { period = "week" } = req.query;
+
+  let truncateBy;
+  let startDate;
+
+  // Calculate start date based on period
+  const now = new Date();
+  switch (period) {
+    case "day":
+      truncateBy = "hour";
+      startDate = new Date(now.setDate(now.getDate() - 1));
+      break;
+    case "week":
+      truncateBy = "day";
+      startDate = new Date(now.setDate(now.getDate() - 7));
+      break;
+    case "month":
+      truncateBy = "day";
+      startDate = new Date(now.setMonth(now.getMonth() - 1));
+      break;
+    case "quarter":
+      truncateBy = "week";
+      startDate = new Date(now.setMonth(now.getMonth() - 3));
+      break;
+    case "year":
+      truncateBy = "month";
+      startDate = new Date(now.setFullYear(now.getFullYear() - 1));
+      break;
+    default:
+      truncateBy = "day";
+      startDate = new Date(now.setDate(now.getDate() - 7));
+  }
+
+  const timeline = await CampaignSend.findAll({
+    where: {
+      sentAt: {
+        [Op.ne]: null,
+        [Op.gte]: startDate,
+      },
+    },
+    include: [
+      {
+        model: Campaign,
+        where: { userId },
+        attributes: [],
+        required: true,
+      },
+      {
+        model: Email,
+        attributes: [],
+        required: false,
+        include: [
+          {
+            model: ReplyEvent,
+            attributes: [],
+            required: false,
+          },
+        ],
+      },
+    ],
+    attributes: [
+      [
+        Sequelize.fn(
+          "date_trunc",
+          truncateBy,
+          Sequelize.col("CampaignSend.sentAt"),
+        ),
+        "date",
+      ],
+      [Sequelize.fn("COUNT", Sequelize.col("CampaignSend.id")), "sent"],
+      [
+        Sequelize.fn(
+          "COUNT",
+          Sequelize.fn("DISTINCT", Sequelize.col("Email.id")),
+        ),
+        "opens",
+      ],
+      [
+        Sequelize.fn(
+          "COUNT",
+          Sequelize.fn("DISTINCT", Sequelize.col("Email->ReplyEvents.id")),
+        ),
+        "replies",
+      ],
+    ],
+    group: [
+      Sequelize.fn(
+        "date_trunc",
+        truncateBy,
+        Sequelize.col("CampaignSend.sentAt"),
+      ),
+    ],
+    order: [
+      [
+        Sequelize.fn(
+          "date_trunc",
+          truncateBy,
+          Sequelize.col("CampaignSend.sentAt"),
+        ),
+        "ASC",
+      ],
+    ],
+    raw: true,
+  });
+
+  // Format the data for frontend
+  const formattedTimeline = timeline.map((item) => ({
+    date: new Date(item.date).toISOString(),
+    sent: parseInt(item.sent) || 0,
+    opens: parseInt(item.opens) || 0,
+    replies: parseInt(item.replies) || 0,
+  }));
+
+  res.json({
+    success: true,
+    data: formattedTimeline,
+    meta: {
+      period,
+      startDate: startDate.toISOString(),
+      endDate: new Date().toISOString(),
+      hasData: formattedTimeline.length > 0,
+    },
+  });
+});
+
+// =========================
+// TOP CAMPAIGNS
+// =========================
+export const getTopCampaigns = asyncHandler(async (req, res) => {
+  const userId = req.user.id;
+  const { limit = 5 } = req.query;
+
+  const topCampaigns = await Campaign.findAll({
+    where: { userId },
+    attributes: [
+      "id",
+      "name",
+      "totalSent",
+      "totalOpens",
+      "totalClicks",
+      "totalReplied",
+      [
+        Sequelize.literal(
+          'CASE WHEN "totalSent" > 0 THEN ("totalReplied"::float / "totalSent") * 100 ELSE 0 END',
+        ),
+        "replyRate",
+      ],
+    ],
+    order: [["totalReplied", "DESC"]],
+    limit: parseInt(limit),
   });
 
   res.json({
     success: true,
-    data: recipients,
+    data: topCampaigns,
   });
-};
+});
 
-/* ======================================================
-   REPLIES LIST
-====================================================== */
-export const campaignReplies = async (req, res) => {
-  const { campaignId } = req.params;
+// =========================
+// RECENT REPLIES
+// =========================
+export const getRecentReplies = asyncHandler(async (req, res) => {
+  const userId = req.user.id;
+  const { limit = 10 } = req.query;
 
   const replies = await ReplyEvent.findAll({
     include: [
       {
         model: Email,
-        where: { campaignId },
-        attributes: ["id", "recipientEmail"], // ✅ ONLY columns guaranteed to exist
+        required: true,
+        include: [
+          {
+            model: Campaign,
+            where: { userId },
+            attributes: ["id", "name"],
+          },
+        ],
+        attributes: ["recipientEmail"],
       },
     ],
     order: [["receivedAt", "DESC"]],
+    limit: parseInt(limit),
   });
+
+  const formattedReplies = replies.map((reply) => ({
+    id: reply.id,
+    from: reply.replyFrom,
+    subject: reply.subject,
+    receivedAt: reply.receivedAt,
+    campaignId: reply.Email?.Campaign?.id,
+    campaignName: reply.Email?.Campaign?.name,
+    recipientEmail: reply.Email?.recipientEmail,
+  }));
 
   res.json({
     success: true,
-    data: replies,
+    data: formattedReplies,
   });
-};
+});
+// =========================
+// SENDER STATS - FINAL FIX
+// =========================
+export const getSenderStats = asyncHandler(async (req, res) => {
+  const userId = req.user.id;
 
-/* ======================================================
-   TIME-TO-REPLY ANALYTICS
-====================================================== */
-export const campaignReplyTime = async (req, res) => {
-  const { campaignId } = req.params;
+  // Get all senders count by type
+  const [gmailCount, outlookCount, smtpCount] = await Promise.all([
+    GmailSender.count({
+      where: {
+        userId,
+        isVerified: true,
+      },
+    }),
+    OutlookSender.count({
+      where: {
+        userId,
+        isVerified: true,
+      },
+    }),
+    SmtpSender.count({
+      where: {
+        userId,
+        isVerified: true,
+        isActive: true,
+      },
+    }),
+  ]);
 
-  const results = await ReplyEvent.findAll({
+  // Get email send counts by sender type from CampaignSend
+  // FIX: Use Campaign.senderType instead of CampaignSend.senderType
+  const sendStats = await CampaignSend.findAll({
+    where: {
+      status: "sent",
+    },
     include: [
       {
-        model: Email,
-        where: { campaignId },
+        model: Campaign,
+        where: { userId },
+        attributes: ["senderType"], // Include senderType from Campaign
+        required: true,
+      },
+    ],
+    attributes: [
+      [Sequelize.col("Campaign.senderType"), "senderType"], // Get senderType from Campaign
+      [Sequelize.fn("COUNT", Sequelize.col("CampaignSend.id")), "count"],
+    ],
+    group: ["Campaign.senderType"], // Group by Campaign.senderType
+    raw: true,
+  });
+
+  console.log("Send Stats:", sendStats); // Debug log
+
+  // Format the stats
+  const stats = {
+    gmail: {
+      type: "gmail",
+      name: "Gmail",
+      count: gmailCount,
+      sent: 0,
+      percentage: 0,
+    },
+    outlook: {
+      type: "outlook",
+      name: "Outlook",
+      count: outlookCount,
+      sent: 0,
+      percentage: 0,
+    },
+    smtp: {
+      type: "smtp",
+      name: "SMTP",
+      count: smtpCount,
+      sent: 0,
+      percentage: 0,
+    },
+  };
+
+  // Add send counts from CampaignSend
+  if (sendStats && sendStats.length > 0) {
+    sendStats.forEach((stat) => {
+      const type = stat.senderType;
+      if (type && stats[type]) {
+        stats[type].sent = parseInt(stat.count) || 0;
+      }
+    });
+  }
+
+  // Calculate total sends
+  const totalSends = Object.values(stats).reduce(
+    (sum, item) => sum + item.sent,
+    0,
+  );
+
+  // Calculate percentages
+  Object.values(stats).forEach((item) => {
+    item.percentage =
+      totalSends > 0 ? Math.round((item.sent / totalSends) * 100) : 0;
+  });
+
+  // Convert to array format for frontend
+  const pieData = Object.values(stats);
+
+  console.log("Final Pie Data:", pieData); // Debug log
+
+  res.json({
+    success: true,
+    data: pieData,
+  });
+});
+
+// =========================
+// HOURLY STATS
+// =========================
+export const getHourlyStats = asyncHandler(async (req, res) => {
+  const userId = req.user.id;
+
+  const hourly = await CampaignSend.findAll({
+    where: {
+      sentAt: { [Op.ne]: null },
+    },
+    include: [
+      {
+        model: Campaign,
+        where: { userId },
         attributes: [],
       },
     ],
     attributes: [
       [
-        Sequelize.literal(
-          'EXTRACT(EPOCH FROM ("ReplyEvent"."receivedAt" - "Email"."createdAt"))'
-        ),
-        "replySeconds",
+        Sequelize.fn("EXTRACT", Sequelize.literal('HOUR FROM "sentAt"')),
+        "hour",
       ],
+      [Sequelize.fn("COUNT", Sequelize.col("CampaignSend.id")), "count"],
     ],
-    where: {
-      receivedAt: { [Op.ne]: null },
-    },
+    group: [Sequelize.fn("EXTRACT", Sequelize.literal('HOUR FROM "sentAt"'))],
+    order: [
+      [Sequelize.fn("EXTRACT", Sequelize.literal('HOUR FROM "sentAt"')), "ASC"],
+    ],
+  });
+
+  // Fill in missing hours
+  const fullDay = Array.from({ length: 24 }, (_, i) => {
+    const existing = hourly.find((h) => parseInt(h.dataValues.hour) === i);
+    return {
+      hour: i,
+      count: existing ? parseInt(existing.dataValues.count) : 0,
+      label: `${i}:00 ${i < 12 ? "AM" : "PM"}`,
+    };
   });
 
   res.json({
     success: true,
-    data: results,
+    data: fullDay,
   });
-};
+});

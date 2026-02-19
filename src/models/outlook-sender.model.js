@@ -110,6 +110,11 @@ const OutlookSender = sequelize.define(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    // Add to GmailSender, OutlookSender, and SmtpSender models
+    lastReplyCheckAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
   },
   {
     tableName: "outlook_senders",

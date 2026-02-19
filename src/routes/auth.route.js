@@ -5,8 +5,11 @@ import {
   googleCallback,
   login,
   logout,
+  microsoftCallback,
+  resendVerification,
   resetPassword,
   signup,
+  verifyAccount,
 } from "../controllers/auth.controller.js";
 import { asyncHandler } from "../helpers/async-handler.js";
 
@@ -230,18 +233,57 @@ router.get(
     session: false,
     failureRedirect: "/login?error=oauth_failed",
   }),
-  asyncHandler(async (req, res) => {
-    // Handle user authentication callback
-    // This is different from sender OAuth
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080";
-    const cleanUrl = frontendUrl.endsWith("/")
-      ? frontendUrl.slice(0, -1)
-      : frontendUrl;
-
-    // Generate JWT token for user
-    // Redirect to frontend with token
-    res.redirect(`${cleanUrl}/dashboard?token=${userToken}`);
-  }),
+  microsoftCallback,
 );
+
+/**
+ * @swagger
+ * /api/v1/auth/verify-account:
+ *   post:
+ *     summary: Verify email with OTP
+ *     tags: [Auth]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email, otp]
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               otp:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Email verified successfully
+ */
+router.post("/verify-account", verifyAccount);
+
+/**
+ * @swagger
+ * /api/v1/auth/resend-verification:
+ *   post:
+ *     summary: Resend verification OTP
+ *     tags: [Auth]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email]
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *     responses:
+ *       200:
+ *         description: OTP resent successfully
+ */
+router.post("/resend-verification", resendVerification);
 
 export default router;

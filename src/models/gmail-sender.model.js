@@ -62,6 +62,12 @@ const GmailSender = sequelize.define(
       allowNull: true,
     },
 
+    // Add to GmailSender, OutlookSender, and SmtpSender models
+    lastReplyCheckAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
     /* =========================
        GOOGLE API SCOPES
     ========================= */

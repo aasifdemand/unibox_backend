@@ -36,6 +36,22 @@ const User = sequelize.define(
       defaultValue: "user",
     },
 
+    // Email verification fields
+    isVerified: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+    },
+
+    verificationOtp: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+
+    verificationOtpExpires: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
     resetOtp: DataTypes.STRING,
     resetOtpExpires: DataTypes.DATE,
     lastLoginAt: DataTypes.DATE,
@@ -44,7 +60,7 @@ const User = sequelize.define(
     tableName: "users",
     timestamps: true,
     paranoid: true,
-  }
+  },
 );
 
 export default User;

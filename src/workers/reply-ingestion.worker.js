@@ -3,26 +3,24 @@ import axios from "axios";
 import { google } from "googleapis";
 import Imap from "imap";
 import { simpleParser } from "mailparser";
-import https from "https";
 import { Op } from "sequelize";
 
 import GmailSender from "../models/gmail-sender.model.js";
 import OutlookSender from "../models/outlook-sender.model.js";
 import SmtpSender from "../models/smtp-sender.model.js";
 import Email from "../models/email.model.js";
-import CampaignRecipient from "../models/campaign-recipient.model.js";
-import CampaignSend from "../models/campaign-send.model.js";
 import ReplyEvent from "../models/reply-event.model.js";
 import Campaign from "../models/campaign.model.js";
+import CampaignRecipient from "../models/campaign-recipient.model.js";
 
 import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
 import { tryCompleteCampaign } from "../utils/campaign-completion.checker.js";
 import { refreshGoogleToken } from "../utils/refresh-google-token.js";
-import sequelize from "../config/db.js";
 
 /* =========================
    LOGGER
 ========================= */
+
 const log = (level, message, meta = {}) =>
   console.log(
     JSON.stringify({
@@ -35,1169 +33,509 @@ const log = (level, message, meta = {}) =>
   );
 
 /* =========================
-   REQUIRED GMAIL SCOPES
+   CORE REPLY PROCESSOR
 ========================= */
-const REQUIRED_GMAIL_SCOPES = [
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/gmail.modify",
-  "https://www.googleapis.com/auth/gmail.send",
-];
 
-/* =========================
-   HELPER: Normalize email for matching
-   Handles Gmail-specific quirks (dots, plus signs, googlemail.com)
-========================= */
-function normalizeEmailForMatching(email) {
-  if (!email) return email;
-
-  let normalized = email.toLowerCase().trim();
-
-  // Handle Gmail: remove dots and plus aliases
-  if (
-    normalized.includes("@gmail.com") ||
-    normalized.includes("@googlemail.com")
-  ) {
-    const [localPart] = normalized.split("@");
-    let cleanLocal = localPart.replace(/\./g, "");
-    cleanLocal = cleanLocal.split("+")[0];
-    normalized = `${cleanLocal}@gmail.com`;
-  }
-
-  // Handle Outlook/Hotmail/Live: case insensitive, remove plus aliasing
-  if (
-    normalized.includes("@outlook.com") ||
-    normalized.includes("@hotmail.com") ||
-    normalized.includes("@live.com")
-  ) {
-    normalized = normalized.split("+")[0];
-  }
-
-  return normalized;
-}
-
-/* =========================
-   HELPER: Extract emails from header
-========================= */
-function extractEmails(header) {
-  if (!header) return [];
-  const matches = header.match(
-    /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
-  );
-  return matches || [];
-}
-
-/* =========================
-   PROCESS REPLY - FIXED WITH ERROR HANDLING
-========================= */
 async function processReply({ sender, email, reply }) {
   try {
-    if (email.status === "replied") {
-      log("DEBUG", "Email already replied, skipping", {
+    if (!email.campaignId) {
+      log("ERROR", "Reply matched email without campaignId", {
         emailId: email.id,
-        status: email.status,
       });
       return;
     }
 
-    log("INFO", "📩 Reply detected - Processing", {
-      emailId: email.id,
-      recipientEmail: email.recipientEmail,
-      from: reply.from,
-      subject: reply.subject,
-      senderType: sender.type,
-      senderEmail: sender.email,
+    // Prevent duplicates
+    const exists = await ReplyEvent.findOne({
+      where: { providerMessageId: reply.messageId },
     });
 
-    // Create ReplyEvent
+    if (exists) return;
+
     await ReplyEvent.create({
       emailId: email.id,
+      campaignId: email.campaignId,
+      recipientId: email.recipientId,
+
       replyFrom: reply.from,
-      subject: reply.subject,
-      body: reply.body,
-      receivedAt: reply.receivedAt,
-      metadata: {
-        provider: sender.type || "smtp",
-        inReplyTo: reply.inReplyTo,
-        threadId: reply.threadId,
-        messageId: reply.messageId,
-      },
+      replyTo: sender.email,
+
+      subject: reply.subject || "",
+      body: reply.body || "",
+
+      providerMessageId: reply.messageId,
+      providerThreadId: reply.threadId,
+      providerConversationId: reply.conversationId,
+
+      receivedAt: reply.receivedAt || new Date(),
+      metadata: reply.headers || {},
     });
 
-    // Update email status
+    // Update email
     await email.update({
       status: "replied",
       repliedAt: reply.receivedAt || new Date(),
     });
 
-    // Update campaign recipient
-    const [count, [recipient]] = await CampaignRecipient.update(
-      {
-        status: "replied",
-        repliedAt: reply.receivedAt || new Date(),
-        nextRunAt: null,
-      },
-      {
-        where: {
-          campaignId: email.campaignId,
-          email: email.recipientEmail,
-          status: { [Op.ne]: "replied" },
+    // Stop recipient from further steps
+    if (email.recipientId) {
+      await CampaignRecipient.update(
+        {
+          status: "replied",
+          nextRunAt: null,
         },
-        returning: true,
-      },
-    );
-
-    if (recipient) {
-      await Campaign.increment("totalReplied", {
-        by: 1,
-        where: { id: email.campaignId },
-      });
+        { where: { id: email.recipientId } },
+      );
     }
 
-    // Cancel future sends
-    await CampaignSend.update(
-      { status: "skipped" },
-      {
-        where: {
-          campaignId: email.campaignId,
-          recipientId: recipient.id,
-          status: "queued",
-        },
-      },
-    );
-
-    log("INFO", "🛑 Follow-ups stopped for recipient", {
-      campaignId: email.campaignId,
-      recipientId: recipient.id,
+    await Campaign.increment("totalReplied", {
+      by: 1,
+      where: { id: email.campaignId },
     });
 
     await tryCompleteCampaign(email.campaignId);
 
-    log("INFO", "✅ Reply processing complete", {
+    log("INFO", "Reply processed successfully", {
       emailId: email.id,
-      from: reply.from,
+      campaignId: email.campaignId,
     });
-  } catch (error) {
-    log("ERROR", "❌ processReply failed", {
-      emailId: email.id,
-      error: error.message,
-      stack: error.stack,
-      from: reply.from,
-      subject: reply.subject,
+  } catch (err) {
+    log("ERROR", "processReply failed", {
+      error: err.message,
+      stack: err.stack,
     });
-    throw error;
   }
 }
 
-/* =========================
-   CHECK GMAIL SCOPES
-========================= */
-async function validateGmailScopes(gmailSender) {
-  if (!gmailSender.scopes) {
-    log("ERROR", "❌ Gmail sender missing scopes array", {
-      email: gmailSender.email,
-      senderId: gmailSender.id,
-    });
-    return false;
+function extractGmailBody(payload) {
+  if (!payload) return "";
+
+  // 1️⃣ Direct body
+  if (payload.body?.data) {
+    return Buffer.from(payload.body.data, "base64").toString("utf8");
   }
 
-  const missingScopes = REQUIRED_GMAIL_SCOPES.filter(
-    (scope) => !gmailSender.scopes.includes(scope),
+  // 2️⃣ If multipart — recursively search
+  if (payload.parts && payload.parts.length) {
+    for (const part of payload.parts) {
+      // Prefer plain text
+      if (part.mimeType === "text/plain" && part.body?.data) {
+        return Buffer.from(part.body.data, "base64").toString("utf8");
+      }
+
+      // Otherwise search deeper
+      const nested = extractGmailBody(part);
+      if (nested) return nested;
+    }
+  }
+
+  return "";
+}
+
+/* =========================
+   GMAIL INGESTION
+========================= */
+
+async function ingestGmailReplies(sender) {
+  log("INFO", "Checking Gmail sender", { sender: sender.email });
+
+  const campaignEmails = await Email.findAll({
+    where: {
+      senderId: sender.id,
+      senderType: "gmail",
+      providerThreadId: { [Op.ne]: null },
+      campaignId: { [Op.ne]: null },
+      status: { [Op.in]: ["sent", "delivered"] },
+    },
+  });
+
+  const threadMap = new Map();
+  campaignEmails.forEach((e) => {
+    threadMap.set(e.providerThreadId, e);
+  });
+
+  if (!threadMap.size) return;
+
+  const tokenData = await refreshGoogleToken(sender);
+  if (!tokenData?.accessToken) return;
+
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_CALLBACK_URL_SENDER,
   );
 
-  if (missingScopes.length > 0) {
-    log(
-      "ERROR",
-      "❌ Gmail sender missing required scopes for reading replies",
-      {
-        email: gmailSender.email,
-        senderId: gmailSender.id,
-        missingScopes,
-        currentScopes: gmailSender.scopes,
-      },
-    );
-
-    await gmailSender.update({
-      isVerified: false,
-      verificationError: `Missing required scopes: ${missingScopes.join(", ")}. Please re-authenticate.`,
-    });
-
-    return false;
-  }
-
-  return true;
-}
-
-/* =========================
-   GMAIL API INGESTION - WORKING PERFECTLY
-========================= */
-async function ingestGmailReplies(gmailSender, messageIdMap) {
-  const senderId = gmailSender.id;
-
-  const hasValidScopes = await validateGmailScopes(gmailSender);
-  if (!hasValidScopes) {
-    log("WARN", "⏭️ Skipping Gmail sender - missing required scopes", {
-      email: gmailSender.email,
-      senderId,
-    });
-    return;
-  }
-
-  const checkFrom = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-
-  log("INFO", "🔍 Checking Gmail sender inbox for replies", {
-    email: gmailSender.email,
-    senderId,
-    checkingSince: checkFrom.toISOString(),
-    messageIdsTracked: messageIdMap.size,
+  oauth2Client.setCredentials({
+    access_token: tokenData.accessToken,
   });
 
-  if (messageIdMap.size === 0) {
-    log("INFO", "⏭️ Skipping - no campaign emails sent from this sender", {
-      email: gmailSender.email,
-      senderId,
-    });
-    return;
-  }
+  const gmail = google.gmail({
+    version: "v1",
+    auth: oauth2Client,
+  });
 
-  try {
-    if (!gmailSender.accessToken) {
-      log("WARN", "Gmail sender missing access token", {
-        email: gmailSender.email,
-        senderId,
-      });
-      return;
-    }
+  const res = await gmail.users.messages.list({
+    userId: "me",
+    q: "in:inbox newer_than:7d",
+    maxResults: 100,
+  });
 
-    let tokenData = null;
-    let isTokenExpired = true;
-
-    if (gmailSender.expiresAt) {
-      const expiryDate = new Date(gmailSender.expiresAt);
-      isTokenExpired = expiryDate <= new Date();
-
-      if (!isTokenExpired) {
-        tokenData = {
-          accessToken: gmailSender.accessToken,
-        };
-      }
-    }
-
-    if (isTokenExpired && gmailSender.refreshToken) {
-      try {
-        tokenData = await refreshGoogleToken(gmailSender);
-        if (!tokenData) {
-          log("ERROR", "Failed to refresh Google token", {
-            email: gmailSender.email,
-            senderId,
-          });
-          return;
-        }
-      } catch (tokenError) {
-        log("ERROR", "Token refresh process failed", {
-          error: tokenError.message,
-          email: gmailSender.email,
-          senderId,
-        });
-        return;
-      }
-    } else if (isTokenExpired && !gmailSender.refreshToken) {
-      log("ERROR", "Access token expired and no refresh token available", {
-        email: gmailSender.email,
-        senderId,
-      });
-      return;
-    }
-
-    if (!tokenData) {
-      log("ERROR", "Failed to get valid Google token", {
-        email: gmailSender.email,
-        senderId,
-      });
-      return;
-    }
-
-    const oauth2Client = new google.auth.OAuth2();
-    oauth2Client.setCredentials({
-      access_token: tokenData.accessToken,
-      refresh_token: gmailSender.refreshToken,
-    });
-
-    const gmail = google.gmail({ version: "v1", auth: oauth2Client });
-
-    const bufferTime = 5 * 60;
-    const searchTimestamp = Math.floor(checkFrom.getTime() / 1000) - bufferTime;
-    const searchQuery = `after:${searchTimestamp}`;
-
-    const response = await gmail.users.messages.list({
+  for (const msg of res.data.messages || []) {
+    const full = await gmail.users.messages.get({
       userId: "me",
-      q: searchQuery,
-      maxResults: 100,
+      id: msg.id,
+      format: "full",
     });
 
-    const messages = response.data.messages || [];
+    const threadId = full.data.threadId;
 
-    if (messages.length === 0) {
-      log("DEBUG", "No messages found in the last 7 days");
-      return;
-    }
-
-    let processedCount = 0;
-    let skippedCount = 0;
-
-    const campaignIds = new Set();
-    for (const emailId of messageIdMap.values()) {
-      const email = await Email.findByPk(emailId, {
-        attributes: ["campaignId"],
-      });
-      if (email && email.campaignId) campaignIds.add(email.campaignId);
-    }
-
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-
-    for (const msg of messages) {
-      try {
-        const existingReply = await ReplyEvent.findOne({
-          where: {
-            metadata: {
-              messageId: msg.id,
-            },
-          },
-        });
-
-        if (existingReply) {
-          skippedCount++;
-          continue;
-        }
-
-        const messageRes = await gmail.users.messages.get({
-          userId: "me",
-          id: msg.id,
-          format: "full",
-        });
-
-        const message = messageRes.data;
-        const headers = message.payload?.headers || [];
-
-        const fromHeader = headers.find((h) => h.name === "From")?.value || "";
-        const toHeader = headers.find((h) => h.name === "To")?.value || "";
-        const deliveredToHeader =
-          headers.find((h) => h.name === "Delivered-To")?.value || "";
-        const ccHeader = headers.find((h) => h.name === "Cc")?.value || "";
-        const subjectHeader =
-          headers.find((h) => h.name === "Subject")?.value || "";
-        const inReplyToHeader =
-          headers.find((h) => h.name === "In-Reply-To")?.value || "";
-        const referencesHeader =
-          headers.find((h) => h.name === "References")?.value || "";
-        const dateHeader = headers.find((h) => h.name === "Date")?.value || "";
-        const messageIdHeader =
-          headers.find((h) => h.name === "Message-ID")?.value || "";
-
-        const fromMatch =
-          fromHeader.match(/<([^>]+)>/) ||
-          fromHeader.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
-        const from = fromMatch
-          ? fromMatch[1].toLowerCase()
-          : fromHeader.toLowerCase();
-
-        const allRecipients = [
-          ...extractEmails(toHeader),
-          ...extractEmails(deliveredToHeader),
-          ...extractEmails(ccHeader),
-        ].map((e) => e.toLowerCase());
-
-        if (!allRecipients.includes(gmailSender.email.toLowerCase())) {
-          skippedCount++;
-          continue;
-        }
-
-        if (
-          from === gmailSender.email.toLowerCase() ||
-          from.includes("noreply") ||
-          from.includes("no-reply")
-        ) {
-          skippedCount++;
-          continue;
-        }
-
-        const messageDate =
-          new Date(dateHeader) ||
-          new Date(parseInt(message.internalDate || Date.now()));
-
-        let body = "";
-        if (message.payload?.body?.data) {
-          body = Buffer.from(message.payload.body.data, "base64").toString();
-        } else if (message.payload?.parts) {
-          const textPart = message.payload.parts.find(
-            (p) => p.mimeType === "text/plain",
-          );
-          if (textPart && textPart.body?.data) {
-            body = Buffer.from(textPart.body.data, "base64").toString();
-          }
-        }
-
-        const threadIds = [
-          inReplyToHeader,
-          ...(referencesHeader ? referencesHeader.split(/\s+/) : []),
-        ].filter(Boolean);
-
-        let emailId = null;
-        let matchedVia = null;
-
-        for (const ref of threadIds) {
-          if (messageIdMap.has(ref)) {
-            emailId = messageIdMap.get(ref);
-            matchedVia = "exact thread ID";
-            break;
-          }
-        }
-
-        if (!emailId) {
-          for (const ref of threadIds) {
-            const cleanRef = ref.replace(/[<>]/g, "");
-            for (const [key, value] of messageIdMap.entries()) {
-              const cleanKey = key.replace(/[<>]/g, "");
-              if (cleanKey.includes(cleanRef) || cleanRef.includes(cleanKey)) {
-                emailId = value;
-                matchedVia = "partial thread ID";
-                break;
-              }
-            }
-            if (emailId) break;
-          }
-        }
-
-        if (!emailId && /^re:/i.test(subjectHeader)) {
-          const baseSubject = subjectHeader.replace(/^re:\s*/i, "").trim();
-
-          const email = await Email.findOne({
-            where: {
-              senderId: gmailSender.id,
-              recipientEmail: from,
-              campaignId: { [Op.in]: Array.from(campaignIds) },
-              createdAt: { [Op.gte]: thirtyDaysAgo },
-              [Op.or]: [
-                {
-                  providerMessageId: {
-                    [Op.in]: Array.from(messageIdMap.keys()),
-                  },
-                },
-                {
-                  metadata: {
-                    subject: { [Op.iLike]: `%${baseSubject}%` },
-                  },
-                },
-              ],
-            },
-            order: [["createdAt", "DESC"]],
-          });
-
-          if (email) {
-            emailId = email.id;
-            matchedVia = "subject fallback";
-          }
-        }
-
-        if (!emailId) {
-          skippedCount++;
-          continue;
-        }
-
-        const email = await Email.findByPk(emailId);
-        if (!email) {
-          continue;
-        }
-
-        const normalizedRecipient = normalizeEmailForMatching(
-          email.recipientEmail,
-        );
-        const normalizedFrom = normalizeEmailForMatching(from);
-
-        if (normalizedRecipient !== normalizedFrom) {
-          skippedCount++;
-          continue;
-        }
-
-        await processReply({
-          sender: { ...gmailSender.toJSON(), type: "gmail" },
-          email,
-          reply: {
-            from,
-            subject: subjectHeader,
-            body,
-            receivedAt: messageDate,
-            inReplyTo: inReplyToHeader,
-            threadId: message.threadId,
-            messageId: messageIdHeader,
-          },
-        });
-
-        processedCount++;
-
-        try {
-          await gmail.users.messages.modify({
-            userId: "me",
-            id: msg.id,
-            requestBody: {
-              removeLabelIds: ["UNREAD"],
-            },
-          });
-        } catch (modifyError) {
-          // Ignore
-        }
-      } catch (e) {
-        skippedCount++;
-      }
-    }
-
-    log("INFO", "📬 Gmail sender inbox check complete", {
-      email: gmailSender.email,
-      totalMessages: messages.length,
-      processedCount,
-      skippedCount,
-    });
-  } catch (err) {
-    log("ERROR", "❌ Gmail inbox ingestion failed", {
-      error: err.message,
-      sender: gmailSender.email,
-    });
-  }
-}
-
-async function ingestOutlookReplies(outlookSender, messageIdMap) {
-  const senderId = outlookSender.id;
-
-  log("INFO", "🔍 Checking Outlook sender ALL folders for replies", {
-    email: outlookSender.email,
-    senderId,
-    messageIdsTracked: messageIdMap.size,
-  });
-
-  if (messageIdMap.size === 0) {
-    log("INFO", "⏭️ Skipping Outlook sender - no campaign emails", {
-      email: outlookSender.email,
-      senderId,
-    });
-    return;
-  }
-
-  try {
-    const freshSender = await OutlookSender.findByPk(senderId);
-    if (!freshSender) return;
-
-    const token = await getValidMicrosoftToken(freshSender);
-    if (!token) {
-      log("ERROR", "❌ Failed to get valid Microsoft token", {
-        email: outlookSender.email,
-      });
-      return;
-    }
-
-    const agent = new https.Agent({
-      rejectUnauthorized: false,
-      keepAlive: true,
+    const headers = {};
+    (full.data.payload?.headers || []).forEach((h) => {
+      headers[h.name] = h.value;
     });
 
-    const folders = ["inbox", "junkemail", "deleteditems", "archive"];
-    const checkFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const from = headers["From"]?.match(/[^\s<]+@[^\s>]+/)?.[0]?.toLowerCase();
 
-    let allMessages = [];
+    if (!from || from === sender.email.toLowerCase()) continue;
 
-    for (const folder of folders) {
-      try {
-        const endpoint = `https://graph.microsoft.com/v1.0/me/mailFolders/${folder}/messages`;
+    // if (full.data.payload.body?.data) {
+    //   body = Buffer.from(full.data.payload.body.data, "base64").toString(
+    //     "utf8",
+    //   );
+    // }
 
-        const response = await axios.get(endpoint, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          params: {
-            $top: 200,
-            $orderby: "receivedDateTime desc",
-            $filter: `receivedDateTime ge ${checkFrom.toISOString()}`,
-            $select:
-              "id,subject,from,toRecipients,ccRecipients,body,bodyPreview,conversationId,internetMessageId,internetMessageHeaders,receivedDateTime",
-          },
-          httpsAgent: agent,
-          timeout: 15000,
-        });
+    const matchedEmail = threadMap.get(threadId);
+    if (!matchedEmail) continue;
 
-        const messages = response.data.value || [];
-        messages.forEach((m) => (m._folder = folder));
-        allMessages.push(...messages);
-      } catch (err) {
-        log("WARN", `⚠️ Failed fetching ${folder}`, {
-          error: err.message,
-        });
-      }
-    }
+    const body = extractGmailBody(full.data.payload);
 
-    const uniqueMessages = Array.from(
-      new Map(allMessages.map((m) => [m.id, m])).values(),
-    );
-
-    let processedCount = 0;
-    let skippedCount = 0;
-
-    for (const msg of uniqueMessages) {
-      try {
-        // Prevent duplicate processing
-        const existingReply = await ReplyEvent.findOne({
-          where: {
-            [Op.or]: [
-              { "metadata.messageId": msg.internetMessageId },
-              { "metadata.threadId": msg.conversationId },
-            ],
-          },
-        });
-
-        if (existingReply) {
-          skippedCount++;
-          continue;
-        }
-
-        const senderEmailLower = outlookSender.email.toLowerCase();
-
-        const toRecipients =
-          msg.toRecipients?.map((r) =>
-            r.emailAddress?.address?.toLowerCase(),
-          ) || [];
-
-        const ccRecipients =
-          msg.ccRecipients?.map((r) =>
-            r.emailAddress?.address?.toLowerCase(),
-          ) || [];
-
-        const allRecipients = [...toRecipients, ...ccRecipients];
-
-        if (!allRecipients.includes(senderEmailLower)) {
-          skippedCount++;
-          continue;
-        }
-
-        const from = msg.from?.emailAddress?.address?.toLowerCase();
-
-        if (
-          !from ||
-          from === senderEmailLower ||
-          from.includes("noreply") ||
-          from.includes("mailer-daemon")
-        ) {
-          skippedCount++;
-          continue;
-        }
-
-        /* =========================
-           HEADER MATCHING (CRITICAL)
-        ========================= */
-
-        const headers = msg.internetMessageHeaders || [];
-
-        const inReplyTo = headers.find(
-          (h) => h.name.toLowerCase() === "in-reply-to",
-        )?.value;
-
-        const references = headers.find(
-          (h) => h.name.toLowerCase() === "references",
-        )?.value;
-
-        const threadIds = [
-          inReplyTo,
-          ...(references ? references.split(/\s+/) : []),
-        ].filter(Boolean);
-
-        let emailId = null;
-        let matchedVia = null;
-
-        // Strategy 1: In-Reply-To / References
-        for (const ref of threadIds) {
-          const cleanRef = ref.replace(/[<>]/g, "");
-
-          if (messageIdMap.has(ref)) {
-            emailId = messageIdMap.get(ref);
-            matchedVia = "inReplyTo exact";
-            break;
-          }
-
-          if (messageIdMap.has(cleanRef)) {
-            emailId = messageIdMap.get(cleanRef);
-            matchedVia = "inReplyTo clean";
-            break;
-          }
-        }
-
-        // Strategy 2: conversationId fallback
-        if (!emailId && msg.conversationId) {
-          for (const [key, value] of messageIdMap.entries()) {
-            if (
-              key.includes(msg.conversationId) ||
-              msg.conversationId.includes(key)
-            ) {
-              emailId = value;
-              matchedVia = "conversationId";
-              break;
-            }
-          }
-        }
-
-        if (!emailId) {
-          skippedCount++;
-          continue;
-        }
-
-        const email = await Email.findByPk(emailId);
-        if (!email) {
-          skippedCount++;
-          continue;
-        }
-
-        const normalizedRecipient = normalizeEmailForMatching(
-          email.recipientEmail,
-        );
-        const normalizedFrom = normalizeEmailForMatching(from);
-
-        if (normalizedRecipient !== normalizedFrom) {
-          skippedCount++;
-          continue;
-        }
-
-        log("INFO", "✅ Outlook reply matched", {
-          emailId,
-          from,
-          subject: msg.subject,
-          matchedVia,
-        });
-
-        await processReply({
-          sender: { ...outlookSender.toJSON(), type: "outlook" },
-          email,
-          reply: {
-            from,
-            subject: msg.subject || "(no subject)",
-            body: msg.body?.content || msg.bodyPreview,
-            receivedAt: new Date(msg.receivedDateTime),
-            inReplyTo,
-            messageId: msg.internetMessageId,
-            threadId: msg.conversationId,
-          },
-        });
-
-        processedCount++;
-      } catch (err) {
-        skippedCount++;
-        log("ERROR", "❌ Outlook message processing failed", {
-          error: err.message,
-        });
-      }
-    }
-
-    log("INFO", "📬 Outlook ingestion complete", {
-      processedCount,
-      skippedCount,
-      total: uniqueMessages.length,
-    });
-  } catch (err) {
-    log("ERROR", "❌ Outlook ingestion failed", {
-      error: err.message,
+    await processReply({
+      sender,
+      email: matchedEmail,
+      reply: {
+        from,
+        subject: headers["Subject"] || "",
+        body,
+        receivedAt: new Date(headers["Date"] || Date.now()),
+        messageId: msg.id,
+        threadId,
+        conversationId: threadId,
+        headers,
+      },
     });
   }
 }
 
 /* =========================
-   SMTP INGESTION - UNCHANGED
+   OUTLOOK INGESTION
 ========================= */
-async function ingestSmtpReplies(smtpSender, messageIdMap) {
-  const senderId = smtpSender.id;
 
-  const checkFrom = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+async function ingestOutlookReplies(sender) {
+  log("INFO", "Checking Outlook sender", { sender: sender.email });
 
-  if (messageIdMap.size === 0) {
-    log("INFO", "⏭️ Skipping SMTP sender - no campaign emails", {
-      email: smtpSender.email,
-      senderId,
-    });
-    return;
-  }
-
-  if (
-    !smtpSender.imapHost ||
-    !smtpSender.imapUsername ||
-    !smtpSender.imapPassword
-  ) {
-    log("WARN", "SMTP sender missing IMAP credentials - cannot check replies", {
-      email: smtpSender.email,
-      senderId,
-    });
-    return;
-  }
-
-  log("INFO", "🔍 Checking SMTP sender IMAP inbox for replies", {
-    email: smtpSender.email,
-    senderId,
-    checkingSince: checkFrom.toISOString(),
+  const campaignEmails = await Email.findAll({
+    where: {
+      senderId: sender.id,
+      senderType: "outlook",
+      campaignId: { [Op.ne]: null },
+      providerThreadId: { [Op.ne]: null }, // 🔥 use providerThreadId consistently
+    },
   });
 
-  return new Promise((resolve) => {
-    const imap = new Imap({
-      user: smtpSender.imapUsername,
-      password: smtpSender.imapPassword,
-      host: smtpSender.imapHost,
-      port: smtpSender.imapPort || 993,
-      tls: smtpSender.imapSecure !== false,
-      tlsOptions: { rejectUnauthorized: false },
+  if (!campaignEmails.length) {
+    log("DEBUG", "No Outlook campaign emails found", {
+      sender: sender.email,
+    });
+    return;
+  }
+
+  const convoMap = new Map();
+  campaignEmails.forEach((e) => {
+    convoMap.set(e.providerThreadId, e);
+  });
+
+  const token = await getValidMicrosoftToken(sender);
+  if (!token) return;
+
+  const res = await axios.get(
+    `https://graph.microsoft.com/v1.0/me/messages?$top=50`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+    },
+  );
+
+  for (const msg of res.data.value || []) {
+    const conversationId = msg.conversationId;
+    const from = msg.from?.emailAddress?.address?.toLowerCase();
+
+    if (!from || from === sender.email.toLowerCase()) continue;
+
+    const matchedEmail = convoMap.get(conversationId);
+
+    if (!matchedEmail) {
+      log("DEBUG", "No conversation match found", {
+        conversationId,
+      });
+      continue;
+    }
+
+    log("INFO", "Matched Outlook reply", {
+      emailId: matchedEmail.id,
+      conversationId,
     });
 
-    imap.once("ready", () => {
-      imap.openBox("INBOX", false, (err) => {
-        if (err) {
-          log("ERROR", "Failed to open SMTP sender IMAP inbox", {
-            error: err.message,
-            sender: smtpSender.email,
-          });
-          imap.end();
-          return resolve();
-        }
+    await processReply({
+      sender,
+      email: matchedEmail,
+      reply: {
+        from,
+        subject: msg.subject,
+        body: msg.body?.content || "",
+        receivedAt: new Date(msg.receivedDateTime),
+        messageId: msg.id,
+        threadId: conversationId,
+        conversationId,
+        headers: {
+          internetMessageId: msg.internetMessageId,
+          conversationId: msg.conversationId,
+        },
+      },
+    });
+  }
+}
 
-        const searchCriteria = [["SINCE", checkFrom.toDateString()]];
+async function ingestImapReplies(sender) {
+  log("INFO", "Checking SMTP sender (IMAP)", {
+    sender: sender.email,
+  });
 
-        imap.search(searchCriteria, (err, results) => {
-          if (err || !results?.length) {
-            log("DEBUG", "No new SMTP messages in the last 7 days");
-            imap.end();
+  try {
+    // 1️⃣ Load campaign emails sent by this SMTP sender
+    const campaignEmails = await Email.findAll({
+      where: {
+        senderId: sender.id,
+        senderType: "smtp",
+        campaignId: { [Op.ne]: null },
+        providerMessageId: { [Op.ne]: null },
+        status: { [Op.in]: ["sent", "delivered"] },
+      },
+      attributes: [
+        "id",
+        "campaignId",
+        "recipientId",
+        "recipientEmail",
+        "providerMessageId",
+      ],
+    });
+
+    if (!campaignEmails.length) {
+      log("DEBUG", "No SMTP campaign emails found", {
+        sender: sender.email,
+      });
+      return;
+    }
+
+    // 2️⃣ Build Message-ID map
+    const messageIdMap = new Map();
+    campaignEmails.forEach((e) => {
+      const clean = e.providerMessageId?.replace(/[<>]/g, "").trim();
+      if (clean) {
+        messageIdMap.set(clean, e);
+      }
+    });
+
+    if (!messageIdMap.size) return;
+
+    // 3️⃣ Connect to IMAP
+    const imap = new Imap({
+      user: sender.imapUsername,
+      password: sender.imapPassword,
+      host: sender.imapHost,
+      port: sender.imapPort || 993,
+      tls: true,
+      autotls: "always",
+      connTimeout: 10000,
+      authTimeout: 5000,
+      keepalive: {
+        interval: 10000,
+        idleInterval: 300000,
+        forceNoop: true,
+      },
+      tlsOptions: {
+        rejectUnauthorized: false, // only if needed
+      },
+    });
+
+    return new Promise((resolve) => {
+      imap.once("ready", () => {
+        imap.openBox("INBOX", false, (err) => {
+          if (err) {
+            log("ERROR", "Failed to open IMAP inbox", {
+              error: err.message,
+            });
             return resolve();
           }
 
-          const fetch = imap.fetch(results, { bodies: "" });
-          let processedCount = 0;
+          // Only unseen messages
+          imap.search(["UNSEEN"], (err, results) => {
+            if (err || !results?.length) {
+              log("DEBUG", "No unseen SMTP replies");
+              return resolve();
+            }
 
-          fetch.on("message", (msg) => {
-            let buffer = "";
-            let uid;
+            const fetch = imap.fetch(results, { bodies: "" });
 
-            msg.once("attributes", (attrs) => (uid = attrs.uid));
-            msg.on("body", (s) =>
-              s.on("data", (c) => (buffer += c.toString())),
-            );
+            fetch.on("message", (msg) => {
+              let buffer = "";
 
-            msg.once("end", async () => {
-              try {
-                const parsed = await simpleParser(buffer);
-
-                const existingReply = await ReplyEvent.findOne({
-                  where: {
-                    metadata: {
-                      messageId: parsed.messageId,
-                    },
-                  },
+              msg.on("body", (stream) => {
+                stream.on("data", (chunk) => {
+                  buffer += chunk.toString("utf8");
                 });
+              });
 
-                if (existingReply) {
-                  return;
-                }
+              msg.once("end", async () => {
+                try {
+                  const parsed = await simpleParser(buffer);
 
-                const toAddresses =
-                  parsed.to?.value?.map((v) => v.address?.toLowerCase()) || [];
-                const ccAddresses =
-                  parsed.cc?.value?.map((v) => v.address?.toLowerCase()) || [];
-                const allRecipients = [...toAddresses, ...ccAddresses];
+                  const from = parsed.from?.value?.[0]?.address?.toLowerCase();
 
-                if (!allRecipients.includes(smtpSender.email.toLowerCase())) {
-                  return;
-                }
-
-                const from = parsed.from?.value?.[0]?.address?.toLowerCase();
-                if (
-                  !from ||
-                  from === smtpSender.email.toLowerCase() ||
-                  from.includes("noreply")
-                ) {
-                  return;
-                }
-
-                if (uid) {
-                  imap.addFlags(uid, ["\\Seen"], { uid: true }, () => {});
-                }
-
-                const messageDate = parsed.date || new Date();
-
-                const threadIds = [
-                  parsed.inReplyTo,
-                  ...(parsed.references || []),
-                ].filter(Boolean);
-
-                let emailId = null;
-
-                for (const ref of threadIds) {
-                  if (messageIdMap.has(ref)) {
-                    emailId = messageIdMap.get(ref);
-                    break;
+                  if (!from || from === sender.email.toLowerCase()) {
+                    return;
                   }
-                }
 
-                if (!emailId) {
-                  for (const ref of threadIds) {
-                    const cleanRef = ref?.replace(/[<>]/g, "") || "";
-                    for (const [key, value] of messageIdMap.entries()) {
-                      const cleanKey = key.replace(/[<>]/g, "");
-                      if (
-                        cleanKey.includes(cleanRef) ||
-                        cleanRef.includes(cleanKey)
-                      ) {
-                        emailId = value;
-                        break;
-                      }
+                  // Extract reference IDs
+                  const references = [];
+                  if (parsed.inReplyTo) references.push(parsed.inReplyTo);
+                  if (parsed.references) references.push(...parsed.references);
+
+                  const cleanRefs = references
+                    .map((id) => id?.replace(/[<>]/g, "").trim())
+                    .filter(Boolean);
+
+                  if (!cleanRefs.length) return;
+
+                  let matchedEmail = null;
+
+                  for (const ref of cleanRefs) {
+                    if (messageIdMap.has(ref)) {
+                      matchedEmail = messageIdMap.get(ref);
+                      break;
                     }
-                    if (emailId) break;
                   }
-                }
 
-                if (!emailId && /^re:/i.test(parsed.subject || "")) {
-                  const baseSubject = parsed.subject.replace(/^re:\s*/i, "");
-                  const email = await Email.findOne({
+                  if (!matchedEmail) return;
+
+                  // Prevent duplicates
+                  const exists = await ReplyEvent.findOne({
                     where: {
-                      senderId: smtpSender.id,
-                      recipientEmail: from,
-                      metadata: {
-                        subject: { [Op.iLike]: `%${baseSubject}%` },
-                      },
+                      providerMessageId: parsed.messageId,
+                      emailId: matchedEmail.id,
                     },
-                    order: [["createdAt", "DESC"]],
                   });
-                  if (email) emailId = email.id;
+
+                  if (exists) return;
+
+                  const body = parsed.text || parsed.html || "(No content)";
+
+                  // 4️⃣ Process reply
+                  await processReply({
+                    sender,
+                    email: matchedEmail,
+                    reply: {
+                      from,
+                      subject: parsed.subject || "",
+                      body,
+                      receivedAt: parsed.date || new Date(),
+                      messageId: parsed.messageId || parsed.messageId,
+                      threadId: parsed.messageId,
+                      conversationId: parsed.messageId,
+                      headers: Object.fromEntries(parsed.headers),
+                    },
+                  });
+
+                  // Mark message as seen
+                  msg.once("attributes", (attrs) => {
+                    imap.addFlags(attrs.uid, ["\\Seen"], () => {});
+                  });
+                } catch (err) {
+                  log("ERROR", "SMTP reply parse failed", {
+                    error: err.message,
+                  });
                 }
-
-                if (!emailId) return;
-
-                const email = await Email.findByPk(emailId);
-                if (!email) return;
-
-                const normalizedRecipient = normalizeEmailForMatching(
-                  email.recipientEmail,
-                );
-                const normalizedFrom = normalizeEmailForMatching(from);
-
-                if (normalizedRecipient !== normalizedFrom) {
-                  return;
-                }
-
-                await processReply({
-                  sender: { ...smtpSender.toJSON(), type: "smtp" },
-                  email,
-                  reply: {
-                    from,
-                    subject: parsed.subject,
-                    body: parsed.html || parsed.text,
-                    receivedAt: messageDate,
-                    inReplyTo: parsed.inReplyTo,
-                    messageId: parsed.messageId,
-                  },
-                });
-
-                processedCount++;
-              } catch (e) {
-                log("ERROR", "❌ SMTP IMAP processing error", {
-                  error: e.message,
-                  sender: smtpSender.email,
-                });
-              }
+              });
             });
-          });
 
-          fetch.once("end", () => {
-            imap.end();
-            log("INFO", "📬 SMTP sender inbox check complete", {
-              email: smtpSender.email,
-              totalMessages: results.length,
-              processedCount,
+            fetch.once("end", async () => {
+              await sender.update({
+                lastReplyCheckAt: new Date(),
+              });
+
+              imap.end();
+              resolve();
             });
-            resolve();
           });
         });
       });
-    });
 
-    imap.once("error", (err) => {
-      log("ERROR", "SMTP IMAP connection error", {
-        error: err.message,
-        sender: smtpSender.email,
+      imap.once("error", (err) => {
+        log("ERROR", "IMAP connection error", {
+          error: err.message,
+        });
+        resolve();
       });
-      resolve();
-    });
 
-    imap.connect();
-  });
+      imap.connect();
+    });
+  } catch (err) {
+    log("ERROR", "SMTP ingestion failed", {
+      sender: sender.email,
+      error: err.message,
+    });
+  }
 }
 
 /* =========================
-   MAIN LOOP - CHECK ALL SENDER INBOXES FOR REPLIES
+   MAIN LOOP
 ========================= */
-const POLL_INTERVAL_MS = 60 * 1000;
+
+const POLL_INTERVAL_MS = 180000; // 3 minutes
+
+let running = false;
+
+async function checkAllSenders() {
+  if (running) return;
+  running = true;
+
+  try {
+    const [gmail, outlook, smtpSenders] = await Promise.all([
+      GmailSender.findAll({ where: { isVerified: true } }),
+      OutlookSender.findAll({ where: { isVerified: true } }),
+      SmtpSender.findAll({
+        where: { isVerified: true, isActive: true },
+      }),
+    ]);
+
+    for (const s of gmail) await ingestGmailReplies(s);
+    for (const s of outlook) await ingestOutlookReplies(s);
+    for (const s of smtpSenders) await ingestImapReplies(s);
+  } catch (err) {
+    log("ERROR", "Reply ingestion failed", { error: err.message });
+  } finally {
+    running = false;
+  }
+}
+
+/* =========================
+   BOOT
+========================= */
+
+console.log("🚀 Reply ingestion worker booting...");
 
 (async () => {
-  log(
-    "INFO",
-    "🚀 Reply ingestion worker started - checking SENDER inboxes for replies",
-  );
+  await checkAllSenders();
 
-  while (true) {
-    try {
-      const [gmailSenders, outlookSenders, smtpSenders] = await Promise.all([
-        GmailSender.findAll({ where: { isVerified: true } }),
-        OutlookSender.findAll({ where: { isVerified: true } }),
-        SmtpSender.findAll({ where: { isVerified: true } }),
-      ]);
-
-      log("INFO", "📊 Checking sender inboxes for replies", {
-        gmailCount: gmailSenders.length,
-        outlookCount: outlookSenders.length,
-        smtpCount: smtpSenders.length,
-      });
-
-      // ✅ GMAIL - WORKING
-      for (const gmailSender of gmailSenders) {
-        try {
-          const hasValidScopes = await validateGmailScopes(gmailSender);
-          if (!hasValidScopes) {
-            log("WARN", "⏭️ Skipping Gmail sender - missing required scopes", {
-              email: gmailSender.email,
-              senderId: gmailSender.id,
-            });
-            continue;
-          }
-
-          const emails = await Email.findAll({
-            where: {
-              senderId: gmailSender.id,
-              status: ["sent", "routed"],
-              providerMessageId: { [Op.ne]: null },
-            },
-            limit: 1000,
-            order: [["createdAt", "DESC"]],
-          });
-
-          if (emails.length === 0) {
-            log("DEBUG", "⏭️ No campaign emails found for Gmail sender", {
-              senderId: gmailSender.id,
-              senderEmail: gmailSender.email,
-            });
-            continue;
-          }
-
-          const messageIdMap = new Map();
-          emails.forEach((e) => {
-            if (e.providerMessageId) {
-              const fullId = e.providerMessageId;
-              const cleanId = fullId.replace(/[<>]/g, "");
-              messageIdMap.set(fullId, e.id);
-              messageIdMap.set(cleanId, e.id);
-            }
-          });
-
-          await ingestGmailReplies(gmailSender, messageIdMap);
-        } catch (err) {
-          log("ERROR", "Failed to process Gmail sender inbox", {
-            senderId: gmailSender.id,
-            email: gmailSender.email,
-            error: err.message,
-          });
-        }
-      }
-
-      // ✅ OUTLOOK - FIXED TO MATCH GMAIL PATTERN
-      for (const outlookSender of outlookSenders) {
-        try {
-          const emails = await Email.findAll({
-            where: {
-              senderId: outlookSender.id,
-              senderType: "outlook",
-              status: { [Op.in]: ["sent", "routed"] },
-              providerMessageId: { [Op.ne]: null },
-            },
-            limit: 1000,
-            order: [["createdAt", "DESC"]],
-          });
-
-          if (emails.length === 0) {
-            log("DEBUG", "⏭️ No campaign emails found for Outlook sender", {
-              senderId: outlookSender.id,
-              senderEmail: outlookSender.email,
-            });
-            continue;
-          }
-          const messageIdMap = new Map();
-          emails.forEach((e) => {
-            if (e.providerMessageId) {
-              const fullId = e.providerMessageId;
-              const cleanId = fullId.replace(/[<>]/g, "");
-              messageIdMap.set(fullId, e.id);
-              messageIdMap.set(cleanId, e.id);
-
-              // ✅ Also store without any special characters for better matching
-              const superClean = fullId.replace(/[<>\[\]()]/g, "");
-              messageIdMap.set(superClean, e.id);
-            }
-
-            // ✅ Also store conversationId if available
-            if (e.metadata?.conversationId) {
-              messageIdMap.set(e.metadata.conversationId, e.id);
-            }
-          });
-
-          log("INFO", "📬 Checking Outlook sender with messageIdMap", {
-            senderEmail: outlookSender.email,
-            emailsSent: emails.length,
-            messageIdsTracked: messageIdMap.size,
-          });
-
-          await ingestOutlookReplies(outlookSender, messageIdMap);
-        } catch (err) {
-          log("ERROR", "Failed to process Outlook sender inbox", {
-            senderId: outlookSender.id,
-            email: outlookSender.email,
-            error: err.message,
-          });
-        }
-      }
-
-      // ✅ SMTP - UNCHANGED
-      for (const smtpSender of smtpSenders) {
-        try {
-          const emails = await Email.findAll({
-            where: {
-              senderId: smtpSender.id,
-              status: ["sent", "routed"],
-              providerMessageId: { [Op.ne]: null },
-            },
-            limit: 1000,
-            order: [["createdAt", "DESC"]],
-          });
-
-          if (emails.length === 0) continue;
-
-          const messageIdMap = new Map();
-          emails.forEach((e) => {
-            if (e.providerMessageId) {
-              messageIdMap.set(e.providerMessageId, e.id);
-              messageIdMap.set(e.providerMessageId.replace(/[<>]/g, ""), e.id);
-            }
-          });
-
-          await ingestSmtpReplies(smtpSender, messageIdMap);
-        } catch (err) {
-          log("ERROR", "Failed to process SMTP sender inbox", {
-            senderId: smtpSender.id,
-            email: smtpSender.email,
-            error: err.message,
-          });
-        }
-      }
-    } catch (err) {
-      log("ERROR", "❌ Reply ingestion cycle failed", {
-        error: err.message,
-        stack: err.stack,
-      });
-    }
-
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-  }
+  setInterval(() => {
+    checkAllSenders();
+  }, POLL_INTERVAL_MS);
 })();

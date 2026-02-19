@@ -14,6 +14,7 @@ import mTADetectorRoutes from "./routes/mta-detector.route.js";
 import emailTempalteRoutes from "./routes/email-template.routes.js";
 import mailboxesRoutes from "./routes/mailboxes.routes.js";
 import analyticsRoutes from "./routes/analytics.routes.js";
+import trackingRoutes from "./routes/tracking.route.js";
 import { responseMiddleware } from "./middlewares/response.middleware.js";
 import errorHandler from "./middlewares/error.middleware.js";
 import path from "path";
@@ -34,7 +35,7 @@ app.use(cookieParser());
 app.use(passport.initialize());
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: process.env.FRONTEND_URL || "http://localhost:5173",
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   }),
@@ -67,6 +68,7 @@ app.use("/api/v1/analytics", analyticsRoutes);
 app.use("/api/v1/mta-detector", mTADetectorRoutes);
 app.use("/api/v1/templates", emailTempalteRoutes);
 app.use("/api/v1/mailboxes", mailboxesRoutes);
+app.use("/api/v1/track", trackingRoutes);
 
 // swagger
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));

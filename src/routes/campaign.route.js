@@ -9,6 +9,7 @@ import {
   getCampaign,
   updateCampaign,
   deleteCampaign,
+  getCampaignReplies,
 } from "../controllers/campaign.controller.js";
 
 /**
@@ -305,5 +306,8 @@ router.post("/:id/pause", protect, pauseCampaign);
  *         description: Campaign resumed
  */
 router.post("/:id/resume", protect, resumeCampaign);
+
+// In your campaign routes
+router.get("/:id/replies", protect, getCampaignReplies);
 
 export default router;

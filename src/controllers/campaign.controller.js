@@ -9,6 +9,10 @@ import GmailSender from "../models/gmail-sender.model.js";
 import OutlookSender from "../models/outlook-sender.model.js";
 import SmtpSender from "../models/smtp-sender.model.js";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
+import ReplyEvent from "../models/reply-event.model.js";
+import Email from "../models/email.model.js";
+import { Op } from "sequelize";
+import sequelize from "../config/db.js";
 
 export const getCampaigns = asyncHandler(async (req, res) => {
   const campaigns = await Campaign.findAll({
@@ -181,28 +185,26 @@ export const createCampaign = asyncHandler(async (req, res) => {
     throw new AppError("List batch not ready", 400);
   }
 
-  // Verify sender exists based on type
   let sender;
-  switch (senderType) {
-    case "gmail":
-      sender = await GmailSender.findOne({
-        where: { id: senderId, userId: req.user.id, isVerified: true },
-      });
-      break;
-    case "outlook":
-      sender = await OutlookSender.findOne({
-        where: { id: senderId, userId: req.user.id, isVerified: true },
-      });
-      break;
-    case "smtp":
-      sender = await SmtpSender.findOne({
-        where: { id: senderId, userId: req.user.id, isVerified: true },
-      });
-      break;
+
+  if (senderType === "gmail") {
+    sender = await GmailSender.findOne({
+      where: { id: senderId, userId: req.user.id, isVerified: true },
+    });
+  } else if (senderType === "outlook") {
+    sender = await OutlookSender.findOne({
+      where: { id: senderId, userId: req.user.id, isVerified: true },
+    });
+  } else if (senderType === "smtp") {
+    sender = await SmtpSender.findOne({
+      where: { id: senderId, userId: req.user.id, isVerified: true },
+    });
   }
 
+  console.log(sender);
+
   if (!sender) {
-    throw new AppError("Invalid or unverified sender", 400);
+    throw new AppError(`Sender not found for type ${senderType}`, 400);
   }
 
   // ALWAYS create as DRAFT - activation happens separately
@@ -424,4 +426,115 @@ export const resumeCampaign = asyncHandler(async (req, res) => {
   await campaign.update({ status: "running" });
 
   res.json({ success: true, message: "Campaign resumed" });
+});
+
+// =========================
+// GET CAMPAIGN REPLIES - FIXED
+// =========================
+export const getCampaignReplies = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { page = 1, limit = 20 } = req.query;
+
+  const campaign = await Campaign.findOne({
+    where: { id, userId: req.user.id },
+  });
+
+  if (!campaign) {
+    throw new AppError("Campaign not found", 404);
+  }
+
+  const offset = (page - 1) * limit;
+
+  const { count, rows: replies } = await ReplyEvent.findAndCountAll({
+    where: { campaignId: id },
+    include: [
+      {
+        model: Email,
+        as: "email",
+        attributes: [
+          "id",
+          "subject",
+          "sentAt",
+          "recipientId",
+          "recipientEmail",
+        ],
+        include: [
+          {
+            model: CampaignRecipient,
+            as: "recipient",
+            attributes: ["id", "email", "name", "status"],
+          },
+        ],
+      },
+    ],
+    order: [["receivedAt", "DESC"]],
+    limit: parseInt(limit),
+    offset: parseInt(offset),
+  });
+
+  // Transform the data to match the expected structure
+  const transformedReplies = replies.map((reply) => {
+    const replyJson = reply.toJSON();
+    return {
+      ...replyJson,
+      recipient: replyJson.email?.recipient || null,
+      // Remove the nested structure if needed
+      email: replyJson.email
+        ? {
+            id: replyJson.email.id,
+            subject: replyJson.email.subject,
+            sentAt: replyJson.email.sentAt,
+          }
+        : null,
+    };
+  });
+
+  // Get unique thread count
+  const uniqueThreads = await ReplyEvent.count({
+    where: { campaignId: id },
+    distinct: true,
+    col: "providerThreadId",
+  });
+
+  // Get total sent count for rate calculation
+  const totalSent = await Email.count({
+    where: { campaignId: id },
+  });
+
+  // Get reply statistics by date (last 30 days)
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const dailyStats = await ReplyEvent.findAll({
+    where: {
+      campaignId: id,
+      receivedAt: { [Op.gte]: thirtyDaysAgo },
+    },
+    attributes: [
+      [sequelize.fn("DATE", sequelize.col("receivedAt")), "date"],
+      [sequelize.fn("COUNT", sequelize.col("id")), "count"],
+    ],
+    group: [sequelize.fn("DATE", sequelize.col("receivedAt"))],
+    order: [[sequelize.fn("DATE", sequelize.col("receivedAt")), "ASC"]],
+    raw: true,
+  });
+
+  res.json({
+    success: true,
+    data: {
+      replies: transformedReplies,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: count,
+        pages: Math.ceil(count / limit),
+      },
+      stats: {
+        totalReplies: count,
+        uniqueThreads,
+        dailyStats,
+        replyRate: totalSent > 0 ? ((count / totalSent) * 100).toFixed(2) : 0,
+      },
+    },
+  });
 });

@@ -194,6 +194,11 @@ const SmtpSender = sequelize.define(
       allowNull: true,
       comment: "e.g., AWS SES, SendGrid, Mailgun, Custom",
     },
+    // Add to GmailSender, OutlookSender, and SmtpSender models
+    lastReplyCheckAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
   },
   {
     tableName: "smtp_senders",

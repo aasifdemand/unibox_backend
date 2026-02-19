@@ -162,26 +162,18 @@ async function ensureStepZero(campaign) {
           return channel.ack(msg);
         }
 
-        /* =========================
-           TEMPLATE RENDERING
-        ========================= */
-        const vars = {
-          name: recipient.name || "there",
-          email: recipient.email,
-          ...(recipient.metadata || {}),
-        };
-
-        // 🔴 FIX: Create email with status 'pending' NOT 'queued'
         const email = await Email.create({
           userId: campaign.userId,
           campaignId,
-          senderId: campaign.senderId, // temp, router will optimize
+          senderId: campaign.senderId,
           senderType: campaign.senderType,
           recipientEmail: recipient.email,
-          status: "pending", // 🔴 CRITICAL: Must be 'pending' for router to process
+          recipientId: recipient.id,
+          status: "pending",
           metadata: {
-            subject: renderTemplate(stepConfig.subject, vars),
-            htmlBody: renderTemplate(stepConfig.htmlBody, vars),
+            // 🔴 STORE RAW TEMPLATE WITH PLACEHOLDERS
+            subject: stepConfig.subject, // Raw: "Hi {{first_name}}"
+            htmlBody: stepConfig.htmlBody, // Raw: "<p>Hi {{first_name}}</p>"
             step,
           },
         });
