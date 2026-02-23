@@ -15,7 +15,7 @@ import BounceEvent from "./bounce-event.model.js";
 import ListUploadBatch from "./list-upload-batch.model.js";
 import ListUploadRecord from "./list-upload-record.model.js";
 import GlobalEmailRegistry from "./global-email-registry.model.js";
-
+import SenderHealth from "./sender-health.model.js";
 /* =====================================================
    USER OWNERSHIP
 ===================================================== */
@@ -276,6 +276,15 @@ Email.belongsTo(CampaignRecipient, {
   as: "recipient",
 });
 CampaignRecipient.hasMany(Email, { foreignKey: "recipientId", as: "emails" });
+
+SmtpSender.hasOne(SenderHealth, {
+  foreignKey: "senderId",
+  onDelete: "CASCADE",
+});
+
+SenderHealth.belongsTo(SmtpSender, {
+  foreignKey: "senderId",
+});
 /* =====================================================
    HELPER FUNCTIONS
 ===================================================== */
@@ -324,4 +333,5 @@ export {
   ListUploadBatch,
   ListUploadRecord,
   GlobalEmailRegistry,
+  SenderHealth,
 };

@@ -21,9 +21,9 @@ const httpsAgent = new https.Agent({
 
 // Cache TTLs
 const CACHE_TTL = {
-  MESSAGES: 300, // 5 minutes (increased from 2)
-  FOLDERS: 600, // 10 minutes (increased from 5)
-  SINGLE_MESSAGE: 1800, // 30 minutes (increased from 10)
+  MESSAGES: 1200,       // 20 minutes
+  FOLDERS: 1800,        // 30 minutes
+  SINGLE_MESSAGE: 3600, // 60 minutes
 };
 
 // =========================

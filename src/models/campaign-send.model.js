@@ -36,7 +36,11 @@ const CampaignSend = sequelize.define(
   {
     tableName: "campaign_sends",
     timestamps: true,
-    indexes: [{ unique: true, fields: ["campaignId", "recipientId", "step"] }],
+    indexes: [
+      { unique: true, fields: ["campaignId", "recipientId", "step"] },
+      { fields: ["sentAt"] },
+      { fields: ["status"] },
+    ],
   },
 );
 

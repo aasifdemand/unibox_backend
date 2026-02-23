@@ -14,7 +14,6 @@ import Campaign from "../models/campaign.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
 
 import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
-import { tryCompleteCampaign } from "../utils/campaign-completion.checker.js";
 import { refreshGoogleToken } from "../utils/refresh-google-token.js";
 
 /* =========================
@@ -93,7 +92,8 @@ async function processReply({ sender, email, reply }) {
       where: { id: email.campaignId },
     });
 
-    await tryCompleteCampaign(email.campaignId);
+    // Removed: await tryCompleteCampaign(email.campaignId); 
+    // We let the campaign stay in 'running' status to keep tracking active and visible.
 
     log("INFO", "Reply processed successfully", {
       emailId: email.id,
@@ -376,10 +376,11 @@ async function ingestImapReplies(sender) {
             return resolve();
           }
 
-          // Only unseen messages
-          imap.search(["UNSEEN"], (err, results) => {
+          // Search for unseen OR recent messages (last 24h) to be safe
+          const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+          imap.search([["OR", "UNSEEN", ["SINCE", since]]], (err, results) => {
             if (err || !results?.length) {
-              log("DEBUG", "No unseen SMTP replies");
+              log("DEBUG", "No SMTP replies found in search");
               return resolve();
             }
 
@@ -500,8 +501,28 @@ async function ingestImapReplies(sender) {
 ========================= */
 
 const POLL_INTERVAL_MS = 180000; // 3 minutes
+const BATCH_SIZE = 10; // Max concurrent senders per batch
 
 let running = false;
+
+/**
+ * Process an array of senders in parallel batches of BATCH_SIZE.
+ * Promise.allSettled ensures one failure doesn't kill others.
+ */
+async function runInBatches(senders, fn) {
+  for (let i = 0; i < senders.length; i += BATCH_SIZE) {
+    const batch = senders.slice(i, i + BATCH_SIZE);
+    const results = await Promise.allSettled(batch.map((s) => fn(s)));
+    results.forEach((r, idx) => {
+      if (r.status === "rejected") {
+        log("ERROR", "Sender ingestion failed in batch", {
+          sender: batch[idx]?.email,
+          error: r.reason?.message,
+        });
+      }
+    });
+  }
+}
 
 async function checkAllSenders() {
   if (running) return;
@@ -511,14 +532,13 @@ async function checkAllSenders() {
     const [gmail, outlook, smtpSenders] = await Promise.all([
       GmailSender.findAll({ where: { isVerified: true } }),
       OutlookSender.findAll({ where: { isVerified: true } }),
-      SmtpSender.findAll({
-        where: { isVerified: true, isActive: true },
-      }),
+      SmtpSender.findAll({ where: { isVerified: true, isActive: true } }),
     ]);
 
-    for (const s of gmail) await ingestGmailReplies(s);
-    for (const s of outlook) await ingestOutlookReplies(s);
-    for (const s of smtpSenders) await ingestImapReplies(s);
+    // Run each provider in parallel batches of BATCH_SIZE
+    await runInBatches(gmail, ingestGmailReplies);
+    await runInBatches(outlook, ingestOutlookReplies);
+    await runInBatches(smtpSenders, ingestImapReplies);
   } catch (err) {
     log("ERROR", "Reply ingestion failed", { error: err.message });
   } finally {

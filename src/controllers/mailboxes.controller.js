@@ -9,6 +9,12 @@ import { asyncHandler } from "../helpers/async-handler.js";
 import AppError from "../utils/app-error.js";
 import { refreshGoogleToken } from "../utils/refresh-google-token.js";
 import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
+import {
+  getCachedData,
+  setCachedData,
+} from "../utils/redis-client.js";
+
+const MAILBOX_CACHE_TTL = 1800; // 30 minutes
 
 // =========================
 // HELPER: Get Gmail client (Fixed - No hardcoded creds)
@@ -315,32 +321,58 @@ const mapOutlookFolderToType = (folderId, folderName) => {
 
 export const getMailboxes = asyncHandler(async (req, res) => {
   const userId = req.user.id;
+  const { search = "", page = 1, limit = 10, type = "all" } = req.query;
+
+  const pageNum = parseInt(page) || 1;
+  const limitNum = parseInt(limit) || 10;
+  const offset = (pageNum - 1) * limitNum;
+
+  const whereClause = {
+    userId,
+    ...(search && {
+      [Op.or]: [
+        { email: { [Op.iLike]: `%${search}%` } },
+        { displayName: { [Op.iLike]: `%${search}%` } },
+        { domain: { [Op.iLike]: `%${search}%` } },
+      ],
+    }),
+  };
+
+  const fetchGmail = type === "all" || type === "gmail";
+  const fetchOutlook = type === "all" || type === "outlook";
+  const fetchSmtp = type === "all" || type === "smtp";
 
   const [gmailSenders, outlookSenders, smtpSenders] = await Promise.all([
-    GmailSender.findAll({
-      where: { userId },
-      attributes: {
-        exclude: ["accessToken", "refreshToken", "googleProfile"],
-        include: ["googleId"], // ✅ Include googleId for type detection
-      },
-    }),
-    OutlookSender.findAll({
-      where: { userId },
-      attributes: {
-        exclude: ["accessToken", "refreshToken", "microsoftProfile"],
-        include: ["microsoftId"], // ✅ Include microsoftId for type detection
-      },
-    }),
-    SmtpSender.findAll({
-      where: { userId },
-      attributes: {
-        exclude: ["smtpPassword", "imapPassword"],
-        include: ["smtpHost"], // ✅ Include smtpHost for type detection
-      },
-    }),
+    fetchGmail
+      ? GmailSender.findAll({
+        where: whereClause,
+        attributes: {
+          exclude: ["accessToken", "refreshToken", "googleProfile"],
+          include: ["googleId"],
+        },
+      })
+      : Promise.resolve([]),
+    fetchOutlook
+      ? OutlookSender.findAll({
+        where: whereClause,
+        attributes: {
+          exclude: ["accessToken", "refreshToken", "microsoftProfile"],
+          include: ["microsoftId"],
+        },
+      })
+      : Promise.resolve([]),
+    fetchSmtp
+      ? SmtpSender.findAll({
+        where: whereClause,
+        attributes: {
+          exclude: ["smtpPassword", "imapPassword"],
+          include: ["smtpHost"],
+        },
+      })
+      : Promise.resolve([]),
   ]);
 
-  const mailboxes = [
+  const allMailboxes = [
     ...gmailSenders.map((s) => ({
       id: s.id,
       type: "gmail",
@@ -349,15 +381,9 @@ export const getMailboxes = asyncHandler(async (req, res) => {
       domain: s.domain,
       isVerified: s.isVerified,
       isActive: true,
-      createdAt: s.createdAt,
       updatedAt: s.updatedAt,
       lastSyncAt: s.lastUsedAt,
-      expiresAt: s.expiresAt,
       stats: { dailySent: s.dailySentCount || 0 },
-      // Include detection fields
-      googleId: s.googleId,
-      microsoftId: null,
-      smtpHost: null,
     })),
     ...outlookSenders.map((s) => ({
       id: s.id,
@@ -367,15 +393,9 @@ export const getMailboxes = asyncHandler(async (req, res) => {
       domain: s.domain,
       isVerified: s.isVerified,
       isActive: true,
-      createdAt: s.createdAt,
       updatedAt: s.updatedAt,
       lastSyncAt: s.lastUsedAt,
-      expiresAt: s.expiresAt,
       stats: { dailySent: s.dailySentCount || 0 },
-      // Include detection fields
-      googleId: null,
-      microsoftId: s.microsoftId,
-      smtpHost: null,
     })),
     ...smtpSenders.map((s) => ({
       id: s.id,
@@ -385,20 +405,27 @@ export const getMailboxes = asyncHandler(async (req, res) => {
       domain: s.domain,
       isVerified: s.isVerified,
       isActive: s.isActive,
-      createdAt: s.createdAt,
       updatedAt: s.updatedAt,
       lastSyncAt: s.lastInboxSyncAt || s.lastUsedAt,
       stats: { dailySent: s.dailySentCount || 0 },
-      // Include detection fields
-      googleId: null,
-      microsoftId: null,
-      smtpHost: s.smtpHost,
     })),
   ];
 
-  mailboxes.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  // Global sort and paginate
+  allMailboxes.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 
-  res.json({ success: true, data: mailboxes });
+  const paginatedResults = allMailboxes.slice(offset, offset + limitNum);
+
+  res.json({
+    success: true,
+    data: paginatedResults,
+    meta: {
+      total: allMailboxes.length,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(allMailboxes.length / limitNum),
+    },
+  });
 });
 
 // =========================
@@ -542,6 +569,14 @@ export const getGmailLabels = asyncHandler(async (req, res) => {
   const { mailboxId } = req.params;
   const userId = req.user.id;
 
+  const cacheKey = `mailbox:gmail:labels:${mailboxId}`;
+
+  // Try cache first
+  const cached = await getCachedData(cacheKey);
+  if (cached) {
+    return res.json({ success: true, data: cached, fromCache: true });
+  }
+
   const sender = await GmailSender.findOne({
     where: { id: mailboxId, userId, isVerified: true },
   });
@@ -614,6 +649,9 @@ export const getGmailLabels = asyncHandler(async (req, res) => {
   });
 
   res.json({ success: true, data: labels });
+
+  // Cache the results
+  await setCachedData(cacheKey, labels, MAILBOX_CACHE_TTL);
 });
 
 // =========================
@@ -623,12 +661,20 @@ export const getOutlookFolders = asyncHandler(async (req, res) => {
   const { mailboxId } = req.params;
   const userId = req.user.id;
 
+  const cacheKey = `mailbox:outlook:folders:${mailboxId}`;
+
+  // Try cache first
+  const cached = await getCachedData(cacheKey);
+  if (cached) {
+    return res.json({ success: true, data: cached, fromCache: true });
+  }
+
   const sender = await OutlookSender.findOne({
     where: { id: mailboxId, userId, isVerified: true },
   });
   if (!sender) throw new AppError("Outlook mailbox not found", 404);
 
-  const token = await getOutlookToken(sender);
+  const token = await getValidMicrosoftToken(sender);
 
   // Get all mail folders
   const response = await axios.get(
@@ -696,12 +742,16 @@ export const getOutlookFolders = asyncHandler(async (req, res) => {
     return a.name.localeCompare(b.name);
   });
 
+  const output = {
+    folders,
+    flatList: folders.flatMap((f) => [f, ...(f.childFolders || [])]),
+  };
+
+  await setCachedData(cacheKey, output, MAILBOX_CACHE_TTL);
+
   res.json({
     success: true,
-    data: {
-      folders,
-      flatList: folders.flatMap((f) => [f, ...(f.childFolders || [])]),
-    },
+    data: output,
   });
 });
 

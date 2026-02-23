@@ -1,6 +1,7 @@
 import { asyncHandler } from "../helpers/async-handler.js";
 import AppError from "../utils/app-error.js";
 import User from "../models/user.model.js";
+import { comparePassword, hashPassword } from "../helpers/hash-password.js";
 
 export const getProfile = asyncHandler(async (req, res) => {
   res.ok({
@@ -47,5 +48,34 @@ export const updateProfile = asyncHandler(async (req, res) => {
       name: user.name,
       email: user.email,
     },
+  });
+});
+
+export const changePassword = asyncHandler(async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+
+  if (!currentPassword || !newPassword) {
+    throw new AppError("Current password and new password are required", 400);
+  }
+  const userId = req.user.id;
+  const user = await User.findByPk(userId);
+
+  if (!user) {
+    throw new AppError("User not found", 404);
+  }
+
+  const isMatch = await comparePassword(currentPassword, user.password);
+
+  if (!isMatch) {
+    throw new AppError("Current password is incorrect", 400);
+  }
+
+  const hashedPass = await hashPassword(newPassword);
+
+  user.password = hashedPass;
+  await user.save();
+
+  res.ok({
+    message: "Password changed successfully",
   });
 });

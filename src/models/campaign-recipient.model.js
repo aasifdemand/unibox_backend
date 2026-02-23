@@ -64,6 +64,7 @@ const CampaignRecipient = sequelize.define(
     indexes: [
       { fields: ["campaignId"] },
       { fields: ["email"] },
+      { fields: ["status"] },
       { unique: true, fields: ["campaignId", "email"] },
     ],
   }

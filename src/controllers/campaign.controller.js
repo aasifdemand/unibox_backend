@@ -33,61 +33,65 @@ export const getCampaigns = asyncHandler(async (req, res) => {
     ],
   });
 
-  // Get all records for these campaigns' batches
-  const records = await ListUploadRecord.findAll({
+  const batchIds = campaigns.map((c) => c.listBatchId).filter(Boolean);
+
+  // 🚀 OPTIMIZATION: Get counts directly from DB via GROUP BY
+  // Avoids loading 100k+ records into Node memory
+  const recordCounts = await ListUploadRecord.findAll({
+    where: { batchId: batchIds },
+    attributes: [
+      "batchId",
+      [sequelize.fn("COUNT", sequelize.col("id")), "totalCount"],
+    ],
+    group: ["batchId"],
+    raw: true,
+  });
+
+  // Map total counts for quick lookup
+  const totalCountsMap = recordCounts.reduce((acc, curr) => {
+    acc[curr.batchId] = parseInt(curr.totalCount);
+    return acc;
+  }, {});
+
+  // 🚀 OPTIMIZATION: Get valid counts from GlobalEmailRegistry
+  // We join with the registry to count only verified valid emails
+  const validCounts = await ListUploadRecord.findAll({
     where: {
-      batchId: campaigns.map((c) => c.listBatchId).filter(Boolean),
+      batchId: batchIds,
     },
-    attributes: ["id", "normalizedEmail", "batchId"],
+    include: [
+      {
+        model: GlobalEmailRegistry,
+        where: { verificationStatus: "valid" },
+        attributes: [],
+        required: true,
+      },
+    ],
+    attributes: [
+      "batchId",
+      [sequelize.fn("COUNT", sequelize.col("ListUploadRecord.id")), "validCount"],
+    ],
+    group: ["batchId"],
+    raw: true,
   });
 
-  // Get normalized emails
-  const normalizedEmails = records
-    .map((r) => r.normalizedEmail)
-    .filter(Boolean);
-
-  // Query GlobalEmailRegistry for valid emails
-  const validEmails = await GlobalEmailRegistry.findAll({
-    where: {
-      normalizedEmail: normalizedEmails,
-      verificationStatus: "valid",
-    },
-    attributes: ["normalizedEmail"],
-  });
-
-  // Create a Set for quick lookup
-  const validEmailSet = new Set(validEmails.map((e) => e.normalizedEmail));
-
-  // Group records by batchId
-  const recordsByBatch = {};
-  records.forEach((record) => {
-    if (!recordsByBatch[record.batchId]) {
-      recordsByBatch[record.batchId] = [];
-    }
-    recordsByBatch[record.batchId].push(record);
-  });
+  const validCountsMap = validCounts.reduce((acc, curr) => {
+    acc[curr.batchId] = parseInt(curr.validCount);
+    return acc;
+  }, {});
 
   // Transform the response
   const campaignsWithData = campaigns.map((campaign) => {
     const campaignData = campaign.toJSON();
     const batchId = campaignData.listBatchId;
 
-    // Get records for this batch
-    const batchRecords = recordsByBatch[batchId] || [];
-
-    // Count valid emails in this batch
-    let validRecipientsCount = 0;
-    batchRecords.forEach((record) => {
-      if (validEmailSet.has(record.normalizedEmail)) {
-        validRecipientsCount++;
-      }
-    });
+    const validRecipientsCount = validCountsMap[batchId] || 0;
 
     return {
       ...campaignData,
       totalRecipients: validRecipientsCount,
       batchValidCount: validRecipientsCount,
-      batchTotalCount: batchRecords.length,
+      batchTotalCount: totalCountsMap[batchId] || 0,
       batchName: campaignData.ListUploadBatch?.originalFilename || "Unknown",
     };
   });

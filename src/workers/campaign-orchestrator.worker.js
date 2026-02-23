@@ -10,7 +10,9 @@ import GlobalEmailRegistry from "../models/global-email-registry.model.js";
 import { getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 import { renderTemplate } from "../utils/template-renderer.js";
+import { injectTracking } from "../utils/tracking-injector.js";
 import { tryCompleteCampaign } from "../utils/campaign-completion.checker.js";
+import crypto from "crypto";
 
 import dayjs from "dayjs";
 
@@ -26,23 +28,19 @@ const log = (level, message, meta = {}) =>
   );
 
 async function ensureStepZero(campaign) {
-  const existing = await CampaignStep.findOne({
+  // Use findOrCreate to prevent unique constraint race conditions when multiple workers process same campaign
+  const [step] = await CampaignStep.findOrCreate({
     where: { campaignId: campaign.id, stepOrder: 0 },
+    defaults: {
+      subject: campaign.subject || "No Subject",
+      htmlBody: campaign.htmlBody || "<p></p>",
+      textBody: campaign.textBody || "",
+      delayMinutes: 0,
+      condition: "always",
+    },
   });
 
-  if (existing) return existing;
-
-  log("INFO", "🧱 Auto-creating step 0", { campaignId: campaign.id });
-
-  return CampaignStep.create({
-    campaignId: campaign.id,
-    stepOrder: 0,
-    subject: campaign.subject,
-    htmlBody: campaign.htmlBody,
-    textBody: campaign.textBody,
-    delayMinutes: 0,
-    condition: "always",
-  });
+  return step;
 }
 
 (async () => {
@@ -162,36 +160,88 @@ async function ensureStepZero(campaign) {
           return channel.ack(msg);
         }
 
+        /* =========================
+        RENDER TEMPLATE
+        ========================= */
+        const nameParts = (recipient.name || "").trim().split(/\s+/);
+        const firstName = nameParts[0] || "";
+        const lastName = nameParts.slice(1).join(" ") || "";
+
+        const variables = {
+          email: recipient.email,
+          name: recipient.name || "",
+          first_name: firstName,
+          last_name: lastName,
+          firstName: firstName, // Common alternative
+          lastName: lastName,   // Common alternative
+          ...recipient.metadata,
+        };
+
+        const renderedSubject = renderTemplate(stepConfig.subject, variables);
+        const renderedHtmlRaw = renderTemplate(stepConfig.htmlBody, variables);
+        const renderedText = renderTemplate(stepConfig.textBody, variables);
+
+        // 🎯 PRE-GENERATE EMAIL ID FOR TRACKING
+        const emailId = crypto.randomUUID();
+
+        // 🎯 INJECT TRACKING
+        const trackedHtml = injectTracking(renderedHtmlRaw, emailId, {
+          trackOpens: campaign.trackOpens,
+          trackClicks: campaign.trackClicks,
+        });
+
         const email = await Email.create({
+          id: emailId,
           userId: campaign.userId,
           campaignId,
           senderId: campaign.senderId,
           senderType: campaign.senderType,
           recipientEmail: recipient.email,
           recipientId: recipient.id,
+          subject: renderedSubject,
+          htmlBody: trackedHtml,
+          textBody: renderedText,
           status: "pending",
           metadata: {
-            // 🔴 STORE RAW TEMPLATE WITH PLACEHOLDERS
-            subject: stepConfig.subject, // Raw: "Hi {{first_name}}"
-            htmlBody: stepConfig.htmlBody, // Raw: "<p>Hi {{first_name}}</p>"
             step,
+            rawSubject: stepConfig.subject,
           },
         });
 
         /* =========================
            NEXT STEP SCHEDULING
         ========================= */
-        await Promise.all([
-          recipient.update({
-            status: "sent",
-            currentStep: step + 1,
+        const nextStep = step + 1;
+        const nextStepConfig = await CampaignStep.findOne({
+          where: { campaignId, stepOrder: nextStep },
+        });
+
+        if (nextStepConfig) {
+          await recipient.update({
+            status: "pending",
+            currentStep: nextStep,
             lastSentAt: new Date(),
             nextRunAt: dayjs()
-              .add(stepConfig.delayMinutes || 0, "minute")
+              .add(nextStepConfig.delayMinutes || 0, "minute")
               .toDate(),
-          }),
-          send.update({ emailId: email.id }),
-        ]);
+          });
+        } else {
+          // Final step sent - mark recipient as completed but keep campaign running
+          await recipient.update({
+            status: "completed",
+            currentStep: nextStep,
+            lastSentAt: new Date(),
+            nextRunAt: null,
+          });
+          
+          log("INFO", "🏁 Recipient finished sequence", {
+            campaignId,
+            recipientId,
+          });
+          // Removed: await tryCompleteCampaign(campaignId); 
+        }
+
+        await send.update({ emailId: email.id });
 
         /* =========================
            ROUTE EMAIL

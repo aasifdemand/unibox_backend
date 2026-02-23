@@ -192,7 +192,7 @@ router.get(
   passport.authenticate("google", {
     session: false,
     prompt: "select_account",
-    failureRedirect: "/login",
+    failureRedirect: `${process.env.FRONTEND_URL}/auth/login?error=google_auth_failed`, // Fixed path
   }),
   googleCallback,
 );
@@ -231,7 +231,7 @@ router.get(
   "/microsoft/callback",
   passport.authenticate("microsoft", {
     session: false,
-    failureRedirect: "/login?error=oauth_failed",
+    failureRedirect: `${process.env.FRONTEND_URL}/auth/login?error=oauth_failed`,
   }),
   microsoftCallback,
 );

@@ -11,7 +11,8 @@
     "router": "node src/workers/email-router.worker.js",
     "sender": "node src/workers/email-sender.worker.js",
     "verifier": "node src/workers/email-verifier.worker.js",
-    "replier": "node src/workers/reply-ingestion.worker.js"
+    "replier": "node src/workers/reply-ingestion.worker.js",
+    "blacklist": "node src/workers/blacklist-monitoring.worker.js"
   },
   "keywords": [],
   "author": "",

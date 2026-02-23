@@ -68,6 +68,16 @@ const Email = sequelize.define(
       allowNull: true,
     },
 
+    htmlBody: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+
+    textBody: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+
     status: {
       type: DataTypes.STRING,
       defaultValue: "queued",

@@ -14,12 +14,12 @@ import { withRateLimit, clearMailboxLimiter } from "../utils/rate-limiter.js";
 
 // Cache TTLs (in seconds)
 const CACHE_TTL = {
-  MESSAGES: 120, // 2 minutes
-  LABELS: 300, // 5 minutes
-  SINGLE_MESSAGE: 600, // 10 minutes
-  DRAFTS: 120, // 2 minutes
-  THREADS: 300, // 5 minutes
-  PROFILE: 3600, // 1 hour
+  MESSAGES: 900,       // 15 minutes
+  LABELS: 1200,        // 20 minutes
+  SINGLE_MESSAGE: 3600, // 60 minutes
+  DRAFTS: 900,         // 15 minutes
+  THREADS: 1200,       // 20 minutes
+  PROFILE: 3600,       // 1 hour
 };
 
 // =========================

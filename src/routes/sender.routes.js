@@ -10,11 +10,16 @@ import {
   revokeSenderAccess,
   testSmtpConnection,
   testImapConnection,
+  getSender,
+  updateSender,
+  bulkUploadSenders,
+  bulkDeleteSenders,
 } from "../controllers/sender.controller.js";
 import GmailSender from "../models/gmail-sender.model.js";
 import OutlookSender from "../models/outlook-sender.model.js";
 import passportGoogle from "../config/passportgoogle-senders.js";
 import passportMicrosoft from "../config/passport-microsoft.config.js";
+import {upload} from "../middlewares/upload.middleware.js";
 
 /**
  * @swagger
@@ -91,6 +96,8 @@ const router = Router();
  *         description: Validation error
  */
 router.post("/create", protect, createSender);
+router.post("/bulk-upload", protect, upload.single("file"), bulkUploadSenders);
+router.post("/bulk-delete", protect, bulkDeleteSenders);
 
 /**
  * @swagger
@@ -145,6 +152,9 @@ router.delete("/:senderId", protect, deleteSender);
  *         description: Test results
  */
 router.post("/:senderId/test", protect, testSender);
+
+router.get("/:senderId", protect, getSender);
+router.put("/:senderId", protect, updateSender);
 
 // =========================
 // GMAIL OAUTH ENDPOINTS

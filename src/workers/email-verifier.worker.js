@@ -162,25 +162,18 @@ async function pollBatchResults(requestId) {
           if (!results) continue;
 
           const stillPending = [];
+          const successUpdates = [];
+
+          // Group by status for bulk updates
+          const updatesByStatus = {};
 
           for (const email of pendingEmails) {
             const result = results[email];
 
             if (result) {
-              console.log(`✅ ${email} → ${result.status}`);
-              await GlobalEmailRegistry.update(
-                {
-                  verificationStatus: result.status,
-                  verificationScore: result.score,
-                  verificationMeta: {
-                    requestId,
-                    batchId,
-                    completedAt: new Date(),
-                  },
-                  verifiedAt: new Date(),
-                },
-                { where: { normalizedEmail: email } },
-              );
+              const status = result.status;
+              if (!updatesByStatus[status]) updatesByStatus[status] = [];
+              updatesByStatus[status].push(email);
             } else {
               const record = await GlobalEmailRegistry.findOne({
                 where: { normalizedEmail: email },
@@ -209,6 +202,25 @@ async function pollBatchResults(requestId) {
                 );
               }
             }
+          }
+
+          // Bulk Update Registry for successes
+          for (const [status, emailList] of Object.entries(updatesByStatus)) {
+            console.log(`✅ Bulk updating ${emailList.length} emails to ${status}`);
+            await GlobalEmailRegistry.update(
+              {
+                verificationStatus: status,
+                verifiedAt: new Date(),
+                // Note: verificationScore/Meta would differ per email if we wanted precision,
+                // but for bulk we can use the common requestId/batchId
+                verificationMeta: {
+                  requestId,
+                  batchId,
+                  completedAt: new Date(),
+                },
+              },
+              { where: { normalizedEmail: { [Op.in]: emailList } } },
+            );
           }
 
           pendingEmails = stillPending;

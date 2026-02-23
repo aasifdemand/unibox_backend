@@ -39,14 +39,22 @@ export const updateEmailTemplate = asyncHandler(async (req, res) => {
    GET ONE
 ========================= */
 export const getEmailTemplate = asyncHandler(async (req, res) => {
-  const template = await getTemplateById(req.params.templateId, req.user.id);
+  const { templateId } = req.params;
+
+  if (!templateId) {
+    return res.status(400).json({
+      success: false,
+      message: "Template ID is required",
+    });
+  }
+
+  const template = await getTemplateById(templateId, req.user.id);
 
   res.json({
     success: true,
     data: template,
   });
 });
-
 /* =========================
    LIST
 ========================= */

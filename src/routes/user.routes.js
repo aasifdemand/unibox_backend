@@ -1,6 +1,10 @@
 import express from "express";
 import { protect } from "../middlewares/auth.middleware.js";
-import { getProfile, updateProfile } from "../controllers/user.controller.js";
+import {
+  changePassword,
+  getProfile,
+  updateProfile,
+} from "../controllers/user.controller.js";
 
 const router = express.Router();
 
@@ -98,5 +102,7 @@ router.get("/me", protect, getProfile);
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 router.patch("/profile", protect, updateProfile);
+
+router.post("/change-password", protect, changePassword);
 
 export default router;

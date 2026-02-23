@@ -1,4 +1,5 @@
 import { Op, Sequelize } from "sequelize";
+import dayjs from "dayjs";
 import Campaign from "../models/campaign.model.js";
 import CampaignSend from "../models/campaign-send.model.js";
 import Email from "../models/email.model.js";
@@ -8,12 +9,21 @@ import { asyncHandler } from "../helpers/async-handler.js";
 import GmailSender from "../models/gmail-sender.model.js";
 import OutlookSender from "../models/outlook-sender.model.js";
 import SmtpSender from "../models/smtp-sender.model.js";
+import { getCachedData, setCachedData } from "../utils/redis-client.js";
+
+const CACHE_TTL = 900; // 15 minutes
 
 // =========================
 // GLOBAL OVERVIEW
 // =========================
 export const getGlobalOverview = asyncHandler(async (req, res) => {
   const userId = req.user.id;
+  const cacheKey = `analytics:overview:${userId}`;
+
+  const cached = await getCachedData(cacheKey);
+  if (cached) {
+    return res.json({ success: true, data: cached });
+  }
 
   const [
     totalCampaigns,
@@ -114,17 +124,21 @@ export const getGlobalOverview = asyncHandler(async (req, res) => {
     }),
   ]);
 
+  const output = {
+    totalCampaigns,
+    activeCampaigns,
+    totalEmailsSent,
+    totalReplies,
+    totalBounces,
+    avgOpenRate: Math.round(avgOpenRate?.avgOpenRate || 0),
+    avgReplyRate: Math.round(avgReplyRate?.avgReplyRate || 0),
+  };
+
+  await setCachedData(cacheKey, output, CACHE_TTL);
+
   res.json({
     success: true,
-    data: {
-      totalCampaigns,
-      activeCampaigns,
-      totalEmailsSent,
-      totalReplies,
-      totalBounces,
-      avgOpenRate: Math.round(avgOpenRate?.avgOpenRate || 0),
-      avgReplyRate: Math.round(avgReplyRate?.avgReplyRate || 0),
-    },
+    data: output,
   });
 });
 
@@ -206,43 +220,63 @@ export const getPerformanceMetrics = asyncHandler(async (req, res) => {
 export const getTimelineData = asyncHandler(async (req, res) => {
   const userId = req.user.id;
   const { period = "week" } = req.query;
+  const cacheKey = `analytics:timeline:${userId}:${period}`;
+
+  const cached = await getCachedData(cacheKey);
+  if (cached) {
+    return res.json({ success: true, data: cached });
+  }
 
   let truncateBy;
   let startDate;
+  let unit;
+  let format;
+  let count;
 
-  // Calculate start date based on period
-  const now = new Date();
+  const now = dayjs(); // Using dayjs for easier date manipulation
+
   switch (period) {
     case "day":
       truncateBy = "hour";
-      startDate = new Date(now.setDate(now.getDate() - 1));
+      startDate = now.subtract(23, "hour").startOf("hour");
+      unit = "hour";
+      format = "YYYY-MM-DD HH:00";
+      count = 24;
       break;
     case "week":
       truncateBy = "day";
-      startDate = new Date(now.setDate(now.getDate() - 7));
+      startDate = now.subtract(6, "day").startOf("day");
+      unit = "day";
+      format = "YYYY-MM-DD";
+      count = 7;
       break;
     case "month":
       truncateBy = "day";
-      startDate = new Date(now.setMonth(now.getMonth() - 1));
-      break;
-    case "quarter":
-      truncateBy = "week";
-      startDate = new Date(now.setMonth(now.getMonth() - 3));
+      startDate = now.subtract(29, "day").startOf("day");
+      unit = "day";
+      format = "YYYY-MM-DD";
+      count = 30;
       break;
     case "year":
       truncateBy = "month";
-      startDate = new Date(now.setFullYear(now.getFullYear() - 1));
+      startDate = now.subtract(11, "month").startOf("month");
+      unit = "month";
+      format = "YYYY-MM";
+      count = 12;
       break;
     default:
       truncateBy = "day";
-      startDate = new Date(now.setDate(now.getDate() - 7));
+      startDate = now.subtract(6, "day").startOf("day");
+      unit = "day";
+      format = "YYYY-MM-DD";
+      count = 7;
   }
 
   const timeline = await CampaignSend.findAll({
     where: {
       sentAt: {
         [Op.ne]: null,
-        [Op.gte]: startDate,
+        [Op.gte]: startDate.toDate(),
       },
     },
     include: [
@@ -274,18 +308,22 @@ export const getTimelineData = asyncHandler(async (req, res) => {
         ),
         "date",
       ],
-      [Sequelize.fn("COUNT", Sequelize.col("CampaignSend.id")), "sent"],
       [
         Sequelize.fn(
           "COUNT",
-          Sequelize.fn("DISTINCT", Sequelize.col("Email.id")),
+          Sequelize.fn("DISTINCT", Sequelize.col("CampaignSend.id")),
+        ),
+        "sent",
+      ],
+      [
+        Sequelize.literal(
+          'COUNT(DISTINCT CASE WHEN "Email"."openedAt" IS NOT NULL THEN "Email"."id" END)',
         ),
         "opens",
       ],
       [
-        Sequelize.fn(
-          "COUNT",
-          Sequelize.fn("DISTINCT", Sequelize.col("Email->ReplyEvents.id")),
+        Sequelize.literal(
+          'COUNT(DISTINCT CASE WHEN "Email->ReplyEvents"."id" IS NOT NULL THEN "Email->ReplyEvents"."id" END)',
         ),
         "replies",
       ],
@@ -310,22 +348,37 @@ export const getTimelineData = asyncHandler(async (req, res) => {
     raw: true,
   });
 
-  // Format the data for frontend
-  const formattedTimeline = timeline.map((item) => ({
-    date: new Date(item.date).toISOString(),
-    sent: parseInt(item.sent) || 0,
-    opens: parseInt(item.opens) || 0,
-    replies: parseInt(item.replies) || 0,
-  }));
+  // Zero-padding logic
+  const result = [];
+  const dbDataMap = timeline.reduce((acc, item) => {
+    const key = dayjs(item.date).format(format);
+    acc[key] = item;
+    return acc;
+  }, {});
+
+  for (let i = 0; i < count; i++) {
+    const d = startDate.add(i, unit);
+    const key = d.format(format);
+    const dbItem = dbDataMap[key];
+
+    result.push({
+      date: d.toISOString(),
+      sent: dbItem ? parseInt(dbItem.sent) : 0,
+      opens: dbItem ? parseInt(dbItem.opens) : 0,
+      replies: dbItem ? parseInt(dbItem.replies) : 0,
+    });
+  }
+
+  await setCachedData(cacheKey, result, CACHE_TTL);
 
   res.json({
     success: true,
-    data: formattedTimeline,
+    data: result,
     meta: {
       period,
       startDate: startDate.toISOString(),
-      endDate: new Date().toISOString(),
-      hasData: formattedTimeline.length > 0,
+      endDate: now.toISOString(),
+      totalPoints: result.length,
     },
   });
 });

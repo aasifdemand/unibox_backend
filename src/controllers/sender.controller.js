@@ -1,7 +1,8 @@
 import { asyncHandler } from "../helpers/async-handler.js";
 import AppError from "../utils/app-error.js";
+import xlsx from "xlsx";
+import { promises as fsPromises } from "fs";
 
-// Import the separate models
 import GmailSender from "../models/gmail-sender.model.js";
 import OutlookSender from "../models/outlook-sender.model.js";
 import SmtpSender from "../models/smtp-sender.model.js";
@@ -10,6 +11,7 @@ import { testGmailConnection } from "../utils/gmail-tester.js";
 import { testOutlookConnection } from "../utils/outlook-tester.js";
 
 import { verifySmtp, verifyImap } from "../services/smtp-imap.service.js";
+import pLimit from "p-limit";
 
 // =========================
 // CREATE SMTP SENDER
@@ -141,6 +143,219 @@ export const createSender = asyncHandler(async (req, res) => {
 });
 
 // =========================
+// BULK UPLOAD SMTP SENDERS FROM XLSX
+// =========================
+export const bulkUploadSenders = asyncHandler(async (req, res) => {
+  if (!req.file) {
+    throw new AppError("Please upload an XLSX file", 400);
+  }
+
+  const filePath = req.file.path;
+  let data;
+  try {
+    const workbook = xlsx.readFile(filePath);
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    data = xlsx.utils.sheet_to_json(sheet);
+  } catch (parseError) {
+    // Cleanup file if parsing fails
+    await fsPromises.unlink(filePath).catch(() => {});
+    throw new AppError(`Failed to parse Excel file: ${parseError.message}`, 400);
+  }
+
+  if (!data || data.length === 0) {
+    await fsPromises.unlink(filePath).catch(() => {});
+    throw new AppError("The uploaded sheet is empty", 400);
+  }
+
+  const userId = req.user.id;
+  const results = {
+    total: data.length,
+    success: 0,
+    failed: 0,
+    errors: [],
+  };
+
+  const sendersToCreate = [];
+
+  for (const [index, row] of data.entries()) {
+    try {
+      // Clean row keys (handle variations in naming/spacing)
+      const cleanRow = {};
+      Object.keys(row).forEach((key) => {
+        cleanRow[key.trim().toLowerCase()] = row[key];
+      });
+
+      const {
+        first_name,
+        last_name,
+        email,
+        domain,
+        password,
+        type,
+      } = cleanRow;
+
+      // Extract values allowing for common variations in header names
+      const emailVal = email || cleanRow.email_address || cleanRow.user_email;
+      const domainVal = domain || cleanRow.site_domain;
+      const passVal = password || cleanRow.pass || cleanRow.smtp_password;
+      const typeVal = type || cleanRow.sender_type || cleanRow.account_type;
+
+      if (!emailVal || !domainVal || !passVal || !typeVal) {
+        throw new Error(
+          `Row ${index + 1}: Missing required fields (email, domain, password, type)`
+        );
+      }
+
+      const emailLower = emailVal.toString().trim().toLowerCase();
+      const domainLower = domainVal.toString().trim().toLowerCase();
+      const typeLower = typeVal.toString().trim().toLowerCase();
+      const displayName = `${first_name || ""} ${last_name || ""}`.trim() || emailLower.split("@")[0];
+
+      let smtpHost, imapHost;
+      if (typeLower === "aapanel") {
+        smtpHost = `mail.${domainLower}`;
+        imapHost = `mail.${domainLower}`;
+      } else if (typeLower === "postal") {
+        smtpHost = `smtp.${domainLower}`;
+        imapHost = `imap.${domainLower}`;
+      } else {
+        throw new Error(`Row ${index + 1}: Unsupported type "${typeVal}"`);
+      }
+
+      sendersToCreate.push({
+        userId,
+        email: emailLower,
+        displayName,
+        domain: domainLower,
+        smtpHost,
+        smtpPort: 465,
+        smtpSecure: true,
+        smtpUsername: emailLower,
+        smtpPassword: passVal.toString(),
+        imapHost,
+        imapPort: 993,
+        imapSecure: true,
+        imapUsername: emailLower,
+        imapPassword: passVal.toString(),
+        provider: typeLower,
+        isActive: true,
+      });
+      results.success++;
+    } catch (err) {
+      results.failed++;
+      results.errors.push(err.message);
+    }
+  }
+
+  if (sendersToCreate.length > 0) {
+    // Check for duplicates in the database
+    const emails = sendersToCreate.map((s) => s.email);
+    const existing = await SmtpSender.findAll({
+      where: {
+        email: emails,
+        userId,
+      },
+      attributes: ["email"],
+    });
+
+    const existingSet = new Set(existing.map((e) => e.email.toLowerCase()));
+    
+    // Check for duplicates within the uploaded file itself
+    const seenInFile = new Set();
+    
+    const finalBatch = [];
+    for (const sender of sendersToCreate) {
+      if (existingSet.has(sender.email)) {
+        results.success--;
+        results.failed++;
+        results.errors.push(`Row for ${sender.email}: Already exists in your account.`);
+      } else if (seenInFile.has(sender.email)) {
+        results.success--;
+        results.failed++;
+        results.errors.push(`Row for ${sender.email}: Duplicate entry in the Excel sheet.`);
+      } else {
+        seenInFile.add(sender.email);
+        finalBatch.push(sender);
+      }
+    }
+
+    if (finalBatch.length > 0) {
+      // Perform SMTP and IMAP handshakes for the batch
+      const limit = pLimit(5); // Concurrency limit of 5
+      
+      const verificationPromises = finalBatch.map((sender) => 
+        limit(async () => {
+          try {
+            // Test SMTP
+            await verifySmtp({
+              host: sender.smtpHost,
+              port: sender.smtpPort,
+              secure: sender.smtpSecure,
+              user: sender.smtpUsername,
+              password: sender.smtpPassword,
+            });
+
+            // Test IMAP
+            await verifyImap({
+              host: sender.imapHost,
+              port: sender.imapPort,
+              secure: sender.imapSecure,
+              user: sender.imapUsername,
+              password: sender.imapPassword,
+            });
+
+            sender.isVerified = true;
+            sender.smtpTestResult = { success: true, testedAt: new Date() };
+            sender.imapTestResult = { success: true, testedAt: new Date() };
+            sender.lastTestedAt = new Date();
+          } catch (err) {
+            sender.isVerified = false;
+            sender.verificationError = err.message;
+            sender.smtpTestResult = { success: false, error: err.message };
+            sender.imapTestResult = { success: false, error: err.message };
+            sender.lastTestedAt = new Date();
+          }
+        })
+      );
+
+      await Promise.all(verificationPromises);
+      
+      const verifiedBatch = finalBatch.filter((s) => s.isVerified);
+      const failedInVerification = finalBatch.filter((s) => !s.isVerified);
+
+      // Adjust counts for verification failures
+      results.success -= failedInVerification.length;
+      results.failed += failedInVerification.length;
+      
+      failedInVerification.forEach((s) => {
+        results.errors.push(`${s.email}: Authentication failed (${s.verificationError})`);
+      });
+
+      if (verifiedBatch.length > 0) {
+        await SmtpSender.bulkCreate(verifiedBatch);
+      }
+    }
+  }
+
+  // Cleanup temporary file
+  await fsPromises.unlink(filePath).catch((err) => {
+    console.error("Failed to delete temp upload file:", err);
+  });
+
+  res.json({
+    success: true,
+    message: `Batch processing complete. ${results.success} senders added, ${results.failed} errors.`,
+    data: {
+      successCount: results.success,
+      failedCount: results.failed,
+      errors: results.errors.slice(0, 50), // Return first 50 errors
+      totalRows: results.total,
+    },
+  });
+});
+
+// =========================
 // LIST ALL SENDERS
 // =========================
 
@@ -211,10 +426,22 @@ export const listSenders = asyncHandler(async (req, res) => {
 
     allSenders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
+    const totalCount = allSenders.length;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+    const paginatedSenders = allSenders.slice(offset, offset + limit);
+
     res.json({
       success: true,
-      data: allSenders,
-      count: allSenders.length,
+      data: paginatedSenders,
+      count: paginatedSenders.length,
+      pagination: {
+        total: totalCount,
+        page,
+        limit,
+        pages: Math.ceil(totalCount / limit),
+      },
       countsByType: {
         smtp: smtpSenders.length,
         gmail: gmailSenders.length,
@@ -230,6 +457,53 @@ export const listSenders = asyncHandler(async (req, res) => {
     });
   }
 });
+// =========================
+// BULK DELETE SENDERS
+// =========================
+export const bulkDeleteSenders = asyncHandler(async (req, res) => {
+  const { senderIds } = req.body; // Array of { id, type }
+  const userId = req.user.id;
+
+  if (!senderIds || !Array.isArray(senderIds)) {
+    throw new AppError("senderIds array is required", 400);
+  }
+
+  const results = {
+    success: 0,
+    failed: 0,
+    errors: [],
+  };
+
+  for (const item of senderIds) {
+    const { id, type } = item;
+    try {
+      let model;
+      if (type === "gmail") model = GmailSender;
+      else if (type === "outlook") model = OutlookSender;
+      else if (type === "smtp") model = SmtpSender;
+      else throw new Error(`Invalid type: ${type}`);
+
+      const sender = await model.findOne({ where: { id, userId } });
+      if (sender) {
+        await sender.destroy({ force: true });
+        results.success++;
+      } else {
+        results.failed++;
+        results.errors.push(`Sender ${id} of type ${type} not found`);
+      }
+    } catch (err) {
+      results.failed++;
+      results.errors.push(`Failed to delete ${id}: ${err.message}`);
+    }
+  }
+
+  res.json({
+    success: true,
+    message: `Batch delete complete. ${results.success} deleted, ${results.failed} failed.`,
+    data: results,
+  });
+});
+
 // =========================
 // DELETE SENDER - FORCE DELETE
 // =========================

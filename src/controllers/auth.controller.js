@@ -187,8 +187,16 @@ export const login = asyncHandler(async (req, res) => {
     throw new AppError("User not found", 404);
   }
 
+  // Check if this is a Google account trying to login with password
+  if (user.googleId && user.password === "GOOGLE_AUTH") {
+    throw new AppError(
+      "This account uses Google login. Please login with Google.",
+      400,
+    );
+  }
+
   // Check if email is verified (for credential auth)
-  if (!user.googleId && !user.isVerified) {
+  if (!user.isVerified) {
     throw new AppError("Please verify your email first", 403);
   }
 
@@ -216,25 +224,16 @@ export const login = asyncHandler(async (req, res) => {
 });
 
 export const googleCallback = asyncHandler(async (req, res) => {
+  // Check if authentication failed
+  if (!req.user) {
+    const errorMessage = req.authInfo?.message || "google_auth_failed";
+    return res.redirect(
+      `${process.env.FRONTEND_URL}/auth/login?error=${encodeURIComponent(errorMessage)}`,
+    );
+  }
+
   const user = req.user;
-
-  if (!user) {
-    return res.redirect(
-      `${process.env.FRONTEND_URL}/login?error=google_auth_failed`,
-    );
-  }
-
-  if (user.password !== "GOOGLE_AUTH" && !user.googleId) {
-    return res.redirect(
-      `${process.env.FRONTEND_URL}/login?error=LOCAL_ACCOUNT_EXISTS`,
-    );
-  }
-
   const token = genToken(user.id);
-
-  await user.update({
-    isVerified: true,
-  });
 
   res.cookie("access_token", token, {
     httpOnly: true,
@@ -242,6 +241,7 @@ export const googleCallback = asyncHandler(async (req, res) => {
     sameSite: "strict",
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
+
   res.redirect(`${process.env.FRONTEND_URL}/dashboard`);
 });
 
