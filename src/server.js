@@ -1,6 +1,9 @@
 import dotenv from "dotenv";
 dotenv.config(); // ALWAYS first
 
+import { initGlobalErrorHandlers } from "./utils/error-handler.js";
+initGlobalErrorHandlers();
+
 import app from "./app.js";
 import sequelize from "./config/db.js";
 import "./models/index.js";

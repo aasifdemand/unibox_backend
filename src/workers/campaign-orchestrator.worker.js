@@ -1,4 +1,6 @@
 import "../models/index.js";
+import { initGlobalErrorHandlers } from "../utils/error-handler.js";
+initGlobalErrorHandlers();
 
 import Campaign from "../models/campaign.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
@@ -43,7 +45,8 @@ async function ensureStepZero(campaign) {
   return step;
 }
 
-(async () => {
+async function startWorker() {
+  let channel;
   try {
     console.log("\n" + "=".repeat(80));
     console.log(
@@ -52,7 +55,7 @@ async function ensureStepZero(campaign) {
     );
     console.log("=".repeat(80));
 
-    const channel = await getChannel();
+    channel = await getChannel();
 
     await channel.assertQueue(QUEUES.CAMPAIGN_SEND, { durable: true });
     await channel.assertQueue(QUEUES.EMAIL_ROUTE, { durable: true });
@@ -184,10 +187,10 @@ async function ensureStepZero(campaign) {
         // 🎯 PRE-GENERATE EMAIL ID FOR TRACKING
         const emailId = crypto.randomUUID();
 
-        // 🎯 INJECT TRACKING
         const trackedHtml = injectTracking(renderedHtmlRaw, emailId, {
           trackOpens: campaign.trackOpens,
           trackClicks: campaign.trackClicks,
+          unsubscribeLink: campaign.unsubscribeLink,
         });
 
         const email = await Email.create({
@@ -271,8 +274,16 @@ async function ensureStepZero(campaign) {
         channel.ack(msg);
       }
     });
+
+    channel.on("close", () => {
+      log("WARN", "Channel closed, restarting in 5s...");
+      setTimeout(startWorker, 5000);
+    });
+
   } catch (err) {
     console.error("💥 FATAL: Campaign Orchestrator failed to start:", err);
-    process.exit(1);
+    setTimeout(startWorker, 5000);
   }
-})();
+}
+
+startWorker();

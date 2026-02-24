@@ -71,6 +71,26 @@ export async function tryCompleteCampaign(campaignId) {
     return false;
   }
 
+  // Check if there are recipients who completed their sequence recently (within 7 days).
+  // We keep the campaign 'running' to collect replies for these recipients.
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const recentlyCompletedRecipients = await CampaignRecipient.count({
+    where: {
+      campaignId,
+      status: "completed",
+      lastSentAt: {
+        [Op.gte]: sevenDaysAgo,
+      },
+    },
+  });
+
+  if (recentlyCompletedRecipients > 0) {
+    console.log(
+      `[Campaign ${campaignId}] Has ${recentlyCompletedRecipients} recently completed recipients (waiting for replies) - not completing`,
+    );
+    return false;
+  }
+
   // Get final stats for logging
   const recipientStats = await CampaignRecipient.findAll({
     where: { campaignId },

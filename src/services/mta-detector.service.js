@@ -95,15 +95,19 @@ class MTADetector {
     }
 
     /* ---------- SMTP PROBE (0.3, best MX only) ---------- */
+    console.log(`🔍 [MTADetector] Probing SMTP banner for ${mxRecords[0].exchange}`);
     const banner = await this._probeSMTP(mxRecords[0].exchange);
     signals.smtp = banner;
 
     if (banner) {
+      console.log(`✅ [MTADetector] SMTP banner received: ${banner.substring(0, 50)}...`);
       for (const [provider, patterns] of Object.entries(this.smtpPatterns)) {
         if (patterns.some((p) => p.test(banner))) {
           scores[provider] += 0.3;
         }
       }
+    } else {
+      console.log(`⚠️ [MTADetector] No SMTP banner received for ${mxRecords[0].exchange}`);
     }
 
     /* ---------- MULTI-MX CONSISTENCY BOOST (0.1) ---------- */
@@ -133,20 +137,46 @@ class MTADetector {
   ========================= */
   async _probeSMTP(host) {
     return new Promise((resolve) => {
+      let resolved = false;
+      
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          console.log(`🕒 [MTADetector] SMTP Probe timed out for ${host}`);
+          socket.destroy();
+          resolve(null);
+        }
+      }, SMTP_TIMEOUT_MS);
+
       const socket = net.createConnection(25, host);
       socket.setTimeout(SMTP_TIMEOUT_MS);
 
       socket.once("data", (data) => {
-        socket.destroy();
-        resolve(data.toString());
+        clearTimeout(timer);
+        if (!resolved) {
+          resolved = true;
+          socket.destroy();
+          resolve(data.toString());
+        }
       });
 
       socket.on("timeout", () => {
-        socket.destroy();
-        resolve(null);
+        clearTimeout(timer);
+        if (!resolved) {
+          resolved = true;
+          socket.destroy();
+          resolve(null);
+        }
       });
 
-      socket.on("error", () => resolve(null));
+      socket.on("error", (err) => {
+        clearTimeout(timer);
+        if (!resolved) {
+          resolved = true;
+          console.log(`❌ [MTADetector] SMTP Probe error for ${host}: ${err.message}`);
+          resolve(null);
+        }
+      });
     });
   }
 

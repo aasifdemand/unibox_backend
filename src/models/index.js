@@ -181,6 +181,7 @@ CampaignSend.belongsTo(CampaignRecipient, {
 
 CampaignSend.belongsTo(Email, {
   foreignKey: "emailId",
+  as: "email",
   onDelete: "SET NULL",
 });
 
@@ -206,18 +207,22 @@ EmailEvent.belongsTo(Email, {
 
 Email.hasMany(ReplyEvent, {
   foreignKey: "emailId",
+  as: "replies",
   onDelete: "CASCADE",
 });
 ReplyEvent.belongsTo(Email, {
   foreignKey: "emailId",
+  as: "email",
 });
 
 Email.hasMany(BounceEvent, {
   foreignKey: "emailId",
+  as: "bounces",
   onDelete: "CASCADE",
 });
 BounceEvent.belongsTo(Email, {
   foreignKey: "emailId",
+  as: "email",
 });
 
 /* =====================================================
@@ -268,8 +273,7 @@ GlobalEmailRegistry.belongsTo(ListUploadRecord, {
   constraints: false,
 });
 
-Email.hasMany(ReplyEvent, { foreignKey: "emailId", as: "replies" });
-ReplyEvent.belongsTo(Email, { foreignKey: "emailId", as: "email" });
+
 
 Email.belongsTo(CampaignRecipient, {
   foreignKey: "recipientId",

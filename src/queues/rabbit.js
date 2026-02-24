@@ -4,16 +4,60 @@ let connection;
 let channel;
 
 export async function getChannel() {
-  if (channel) return channel;
+  if (channel && connection) {
+    try {
+      // Basic check if connection is still healthy
+      return channel;
+    } catch (e) {
+      channel = null;
+      connection = null;
+    }
+  }
 
-  connection = await amqp.connect(process.env.RABBITMQ_URL);
-  channel = await connection.createChannel();
+  try {
+    console.log("🐇 Connecting to RabbitMQ...");
+    connection = await amqp.connect(process.env.RABBITMQ_URL);
+    
+    connection.on("error", (err) => {
+      console.error("🐇 RabbitMQ Connection Error:", err);
+      connection = null;
+      channel = null;
+    });
+    
+    connection.on("close", () => {
+      console.error("🐇 RabbitMQ Connection Closed. Resetting channel.");
+      connection = null;
+      channel = null;
+    });
 
-  process.on("SIGINT", async () => {
-    await channel.close();
-    await connection.close();
-    process.exit(0);
-  });
+    channel = await connection.createChannel();
 
-  return channel;
+    channel.on("error", (err) => {
+      console.error("🐇 RabbitMQ Channel Error:", err);
+      channel = null;
+    });
+
+    channel.on("close", () => {
+      console.error("🐇 RabbitMQ Channel Closed. Resetting channel.");
+      channel = null;
+    });
+
+    process.on("SIGINT", async () => {
+      try {
+        if (channel) await channel.close();
+        if (connection) await connection.close();
+      } catch (e) {
+        console.error("🐇 Error during RabbitMQ disconnection:", e);
+      }
+      process.exit(0);
+    });
+
+    console.log("🐇 RabbitMQ Connected and Channel created.");
+    return channel;
+  } catch (error) {
+    console.error("🐇 Failed to connect to RabbitMQ:", error);
+    connection = null;
+    channel = null;
+    throw error;
+  }
 }

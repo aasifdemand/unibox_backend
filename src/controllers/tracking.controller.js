@@ -91,3 +91,37 @@ export const trackClick = asyncHandler(async (req, res) => {
   // Redirect to original URL
   res.redirect(302, decodedUrl);
 });
+
+export const trackUnsubscribe = asyncHandler(async (req, res) => {
+  const { emailId } = req.params;
+
+  try {
+    const email = await Email.findByPk(emailId);
+    if (email && email.recipientId) {
+      // Find the recipient in the campaign
+      const recipient = await sequelize.models.CampaignRecipient.findByPk(email.recipientId);
+      
+      if (recipient && recipient.status !== "stopped" && recipient.status !== "completed") {
+        await recipient.update({
+          status: "stopped",
+          nextRunAt: null,
+          metadata: { ...recipient.metadata, unsubscribed: true, unsubscribedAt: new Date() }
+        });
+        
+        console.log(`🚫 Unsubscribe tracked for email ${emailId}`);
+      }
+    }
+  } catch (error) {
+    console.error("Error tracking unsubscribe:", error);
+  }
+
+  // Return a simple HTML message for GET requests
+  res.send(`
+    <html>
+      <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+        <h2>You have been successfully unsubscribed.</h2>
+        <p>You will no longer receive emails from this campaign.</p>
+      </body>
+    </html>
+  `);
+});

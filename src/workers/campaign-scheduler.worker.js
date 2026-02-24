@@ -1,4 +1,6 @@
 import "../models/index.js";
+import { initGlobalErrorHandlers } from "../utils/error-handler.js";
+initGlobalErrorHandlers();
 import Campaign from "../models/campaign.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
 import { getChannel } from "../queues/rabbit.js";

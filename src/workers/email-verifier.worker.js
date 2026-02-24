@@ -1,5 +1,7 @@
 // workers/email-verifier.worker.js
 import "../models/index.js";
+import { initGlobalErrorHandlers } from "../utils/error-handler.js";
+initGlobalErrorHandlers();
 import axios from "axios";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
 import ListUploadRecord from "../models/list-upload-record.model.js";
@@ -84,167 +86,175 @@ async function pollBatchResults(requestId) {
 /* =========================
    WORKER
 ========================= */
-(async () => {
-  const channel = await getChannel();
-  await channel.assertQueue(QUEUES.EMAIL_VERIFY, { durable: true });
-  channel.prefetch(1);
+async function startWorker() {
+  let channel;
+  try {
+    channel = await getChannel();
+    await channel.assertQueue(QUEUES.EMAIL_VERIFY, { durable: true });
+    channel.prefetch(1);
 
-  console.log("🚀 Email Verification Worker started");
+    console.log("🚀 Email Verification Worker started");
 
-  channel.consume(QUEUES.EMAIL_VERIFY, async (msg) => {
-    if (!msg) return;
-    const { batchId } = JSON.parse(msg.content.toString());
+    channel.consume(QUEUES.EMAIL_VERIFY, async (msg) => {
+      if (!msg) return;
+      const { batchId } = JSON.parse(msg.content.toString());
 
-    try {
-      const batch = await ListUploadBatch.findByPk(batchId);
-      if (!batch) {
-        channel.ack(msg);
-        return;
-      }
+      try {
+        const batch = await ListUploadBatch.findByPk(batchId);
+        if (!batch) {
+          channel.ack(msg);
+          return;
+        }
 
-      await batch.update({
-        status: "verifying",
-        verificationStartedAt: new Date(),
-      });
+        await batch.update({
+          status: "verifying",
+          verificationStartedAt: new Date(),
+        });
 
-      const records = await ListUploadRecord.findAll({
-        where: {
-          batchId,
-          normalizedEmail: { [Op.ne]: null },
-          status: { [Op.in]: ["parsed", "duplicate"] },
-        },
-        attributes: ["normalizedEmail"],
-      });
+        const records = await ListUploadRecord.findAll({
+          where: {
+            batchId,
+            normalizedEmail: { [Op.ne]: null },
+            status: { [Op.in]: ["parsed", "duplicate"] },
+          },
+          attributes: ["normalizedEmail"],
+        });
 
-      let emails = records.map((r) => normalizeEmail(r.normalizedEmail));
+        let emails = records.map((r) => normalizeEmail(r.normalizedEmail));
 
-      for (let i = 0; i < emails.length; i += BATCH_SIZE_LIMIT) {
-        const chunk = emails.slice(i, i + BATCH_SIZE_LIMIT);
-        let pendingEmails = [...chunk];
+        for (let i = 0; i < emails.length; i += BATCH_SIZE_LIMIT) {
+          const chunk = emails.slice(i, i + BATCH_SIZE_LIMIT);
+          let pendingEmails = [...chunk];
 
-        for (let attempt = 0; attempt <= MAX_EMAIL_RETRIES; attempt++) {
-          if (!pendingEmails.length) break;
+          for (let attempt = 0; attempt <= MAX_EMAIL_RETRIES; attempt++) {
+            if (!pendingEmails.length) break;
 
-          if (attempt > 0) {
-            console.log(
-              `🔁 Retry ${attempt}/${MAX_EMAIL_RETRIES} for ${pendingEmails.length} emails`,
-            );
-            await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-          }
-
-          const requestId = await submitBatchToEndBounce(pendingEmails);
-
-          await GlobalEmailRegistry.update(
-            {
-              verificationStatus: "verifying",
-              verificationMeta: { requestId, batchId, attempt },
-              verifiedAt: new Date(),
-            },
-            {
-              where: {
-                normalizedEmail: { [Op.in]: pendingEmails },
-                verificationStatus: "unknown",
-              },
-            },
-          );
-
-          let results = null;
-
-          for (let poll = 1; poll <= MAX_POLL_ATTEMPTS; poll++) {
-            const res = await pollBatchResults(requestId);
-            if (res.ready) {
-              results = res.results;
-              break;
+            if (attempt > 0) {
+              console.log(
+                `🔁 Retry ${attempt}/${MAX_EMAIL_RETRIES} for ${pendingEmails.length} emails`,
+              );
+              await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
             }
-            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-          }
 
-          if (!results) continue;
+            const requestId = await submitBatchToEndBounce(pendingEmails);
 
-          const stillPending = [];
-          const successUpdates = [];
-
-          // Group by status for bulk updates
-          const updatesByStatus = {};
-
-          for (const email of pendingEmails) {
-            const result = results[email];
-
-            if (result) {
-              const status = result.status;
-              if (!updatesByStatus[status]) updatesByStatus[status] = [];
-              updatesByStatus[status].push(email);
-            } else {
-              const record = await GlobalEmailRegistry.findOne({
-                where: { normalizedEmail: email },
-              });
-
-              if (canRetryEmail(record?.verificationMeta)) {
-                stillPending.push(email);
-                await GlobalEmailRegistry.update(
-                  {
-                    verificationMeta: nextRetryMeta(record?.verificationMeta),
-                  },
-                  { where: { normalizedEmail: email } },
-                );
-              } else {
-                console.log(`❌ ${email} max retries reached`);
-                await GlobalEmailRegistry.update(
-                  {
-                    verificationStatus: "unknown",
-                    verificationMeta: {
-                      ...record?.verificationMeta,
-                      finalFailure: true,
-                    },
-                    verifiedAt: new Date(),
-                  },
-                  { where: { normalizedEmail: email } },
-                );
-              }
-            }
-          }
-
-          // Bulk Update Registry for successes
-          for (const [status, emailList] of Object.entries(updatesByStatus)) {
-            console.log(`✅ Bulk updating ${emailList.length} emails to ${status}`);
             await GlobalEmailRegistry.update(
               {
-                verificationStatus: status,
+                verificationStatus: "verifying",
+                verificationMeta: { requestId, batchId, attempt },
                 verifiedAt: new Date(),
-                // Note: verificationScore/Meta would differ per email if we wanted precision,
-                // but for bulk we can use the common requestId/batchId
-                verificationMeta: {
-                  requestId,
-                  batchId,
-                  completedAt: new Date(),
+              },
+              {
+                where: {
+                  normalizedEmail: { [Op.in]: pendingEmails },
+                  verificationStatus: "unknown",
                 },
               },
-              { where: { normalizedEmail: { [Op.in]: emailList } } },
             );
-          }
 
-          pendingEmails = stillPending;
+            let results = null;
+
+            for (let poll = 1; poll <= MAX_POLL_ATTEMPTS; poll++) {
+              const res = await pollBatchResults(requestId);
+              if (res.ready) {
+                results = res.results;
+                break;
+              }
+              await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+            }
+
+            if (!results) continue;
+
+            const stillPending = [];
+            const successUpdates = [];
+
+            // Group by status for bulk updates
+            const updatesByStatus = {};
+
+            for (const email of pendingEmails) {
+              const result = results[email];
+
+              if (result) {
+                const status = result.status;
+                if (!updatesByStatus[status]) updatesByStatus[status] = [];
+                updatesByStatus[status].push(email);
+              } else {
+                const record = await GlobalEmailRegistry.findOne({
+                  where: { normalizedEmail: email },
+                });
+
+                if (canRetryEmail(record?.verificationMeta)) {
+                  stillPending.push(email);
+                  await GlobalEmailRegistry.update(
+                    {
+                      verificationMeta: nextRetryMeta(record?.verificationMeta),
+                    },
+                    { where: { normalizedEmail: email } },
+                  );
+                } else {
+                  console.log(`❌ ${email} max retries reached`);
+                  await GlobalEmailRegistry.update(
+                    {
+                      verificationStatus: "unknown",
+                      verificationMeta: {
+                        ...record?.verificationMeta,
+                        finalFailure: true,
+                      },
+                      verifiedAt: new Date(),
+                    },
+                    { where: { normalizedEmail: email } },
+                  );
+                }
+              }
+            }
+
+            // Bulk Update Registry for successes
+            for (const [status, emailList] of Object.entries(updatesByStatus)) {
+              console.log(`✅ Bulk updating ${emailList.length} emails to ${status}`);
+              await GlobalEmailRegistry.update(
+                {
+                  verificationStatus: status,
+                  verifiedAt: new Date(),
+                  // Note: verificationScore/Meta would differ per email if we wanted precision,
+                  // but for bulk we can use the common requestId/batchId
+                  verificationMeta: {
+                    requestId,
+                    batchId,
+                    completedAt: new Date(),
+                  },
+                },
+                { where: { normalizedEmail: { [Op.in]: emailList } } },
+              );
+            }
+
+            pendingEmails = stillPending;
+          }
         }
+
+        await batch.update({
+          status: "verified",
+          verificationCompletedAt: new Date(),
+        });
+      } catch (err) {
+        console.error("❌ Worker failed:", err);
+        await ListUploadBatch.update(
+          { status: "verification_failed", verificationError: err.message },
+          { where: { id: batchId } },
+        );
       }
 
-      await batch.update({
-        status: "verified",
-        verificationCompletedAt: new Date(),
-      });
-    } catch (err) {
-      console.error("❌ Worker failed:", err);
-      await ListUploadBatch.update(
-        { status: "verification_failed", verificationError: err.message },
-        { where: { id: batchId } },
-      );
-    }
+      channel.ack(msg);
+    });
 
-    channel.ack(msg);
-  });
+    channel.on("close", () => {
+      console.log("WARN: Channel closed, restarting in 5s...");
+      setTimeout(startWorker, 5000);
+    });
 
-  process.on("SIGINT", async () => {
-    console.log("🛑 Worker shutting down");
-    await channel.close();
-    process.exit(0);
-  });
-})();
+  } catch (err) {
+    console.error("💥 FATAL: Email Verification Worker failed to start:", err);
+    setTimeout(startWorker, 5000);
+  }
+}
+
+startWorker();

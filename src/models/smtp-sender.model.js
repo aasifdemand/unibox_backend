@@ -128,16 +128,6 @@ const SmtpSender = sequelize.define(
       allowNull: true,
     },
 
-    dkimEnabled: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: false,
-    },
-
-    spfEnabled: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: false,
-    },
-
     /* =========================
        RATE LIMITING & QUOTAS
     ========================= */

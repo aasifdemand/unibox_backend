@@ -62,6 +62,7 @@ export const getGlobalOverview = asyncHandler(async (req, res) => {
       include: [
         {
           model: Email,
+          as: "email",
           include: [
             {
               model: Campaign,
@@ -78,6 +79,7 @@ export const getGlobalOverview = asyncHandler(async (req, res) => {
       include: [
         {
           model: Email,
+          as: "email",
           include: [
             {
               model: Campaign,
@@ -288,11 +290,13 @@ export const getTimelineData = asyncHandler(async (req, res) => {
       },
       {
         model: Email,
+        as: "email",
         attributes: [],
         required: false,
         include: [
           {
             model: ReplyEvent,
+            as: "replies",
             attributes: [],
             required: false,
           },
@@ -317,13 +321,13 @@ export const getTimelineData = asyncHandler(async (req, res) => {
       ],
       [
         Sequelize.literal(
-          'COUNT(DISTINCT CASE WHEN "Email"."openedAt" IS NOT NULL THEN "Email"."id" END)',
+          'COUNT(DISTINCT CASE WHEN "email"."openedAt" IS NOT NULL THEN "email"."id" END)',
         ),
         "opens",
       ],
       [
         Sequelize.literal(
-          'COUNT(DISTINCT CASE WHEN "Email->ReplyEvents"."id" IS NOT NULL THEN "Email->ReplyEvents"."id" END)',
+          'COUNT(DISTINCT CASE WHEN "email->replies"."id" IS NOT NULL THEN "email->replies"."id" END)',
         ),
         "replies",
       ],
@@ -427,6 +431,7 @@ export const getRecentReplies = asyncHandler(async (req, res) => {
     include: [
       {
         model: Email,
+        as: "email",
         required: true,
         include: [
           {

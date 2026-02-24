@@ -1,4 +1,6 @@
 import "../models/index.js";
+import { initGlobalErrorHandlers } from "../utils/error-handler.js";
+initGlobalErrorHandlers();
 import axios from "axios";
 import { google } from "googleapis";
 import Imap from "imap";
@@ -362,7 +364,7 @@ async function ingestImapReplies(sender) {
         forceNoop: true,
       },
       tlsOptions: {
-        rejectUnauthorized: false, // only if needed
+        rejectUnauthorized: false,
       },
     });
 

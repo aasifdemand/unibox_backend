@@ -34,14 +34,17 @@ class MTADetectorCache {
     }
 
     /* ---------- DB ---------- */
+    console.log(`🔍 [MTACache] Checking DB for ${domain}`);
     const record = await EmailDomainProvider.findOne({ where: { domain } });
     if (record && new Date(record.ttlExpiresAt) > new Date()) {
+      console.log(`✅ [MTACache] DB hit for ${domain}`);
       const data = this._fromDB(record);
       await this._storeAll(key, data);
       return data;
     }
 
     /* ---------- HARD DETECTION ---------- */
+    console.log(`🔍 [MTACache] Hard detection required for ${domain}`);
     const detected = await mtaDetector.detect(domain);
 
     await EmailDomainProvider.upsert({

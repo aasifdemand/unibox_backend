@@ -11,11 +11,9 @@ import { testGmailConnection } from "../utils/gmail-tester.js";
 import { testOutlookConnection } from "../utils/outlook-tester.js";
 
 import { verifySmtp, verifyImap } from "../services/smtp-imap.service.js";
+import { senderHealthService } from "../services/sender-health.service.js";
 import pLimit from "p-limit";
 
-// =========================
-// CREATE SMTP SENDER
-// =========================
 export const createSender = asyncHandler(async (req, res) => {
   const {
     email,
@@ -36,109 +34,91 @@ export const createSender = asyncHandler(async (req, res) => {
     imapPassword,
 
     /* Optional */
-    provider = "custom", // e.g., aws, sendgrid, mailgun, custom
+    provider = "custom",
     dailyLimit = 500,
     hourlyLimit = 100,
   } = req.body;
 
-  // Validation
   if (!email || !displayName) {
     throw new AppError("Email and display name are required", 400);
   }
 
-  if (!smtpHost || !smtpPort || !smtpUser || !smtpPassword) {
+  if (!smtpHost || !smtpUser || !smtpPassword) {
     throw new AppError("Incomplete SMTP configuration", 400);
   }
 
-  if (!imapHost || !imapPort || !imapUser || !imapPassword) {
+  if (!imapHost || !imapUser || !imapPassword) {
     throw new AppError("Incomplete IMAP configuration", 400);
   }
 
-  // Check if email already exists in any sender type
+  const emailLower = email.toLowerCase();
+  const domain = emailLower.split("@")[1];
+
+  // Check duplicates across all sender types
   const [existingGmail, existingOutlook, existingSmtp] = await Promise.all([
-    GmailSender.findOne({
-      where: { email: email.toLowerCase(), userId: req.user.id },
-    }),
-    OutlookSender.findOne({
-      where: { email: email.toLowerCase(), userId: req.user.id },
-    }),
-    SmtpSender.findOne({
-      where: { email: email.toLowerCase(), userId: req.user.id },
-    }),
+    GmailSender.findOne({ where: { email: emailLower, userId: req.user.id } }),
+    OutlookSender.findOne({ where: { email: emailLower, userId: req.user.id } }),
+    SmtpSender.findOne({ where: { email: emailLower, userId: req.user.id } }),
   ]);
 
   if (existingGmail || existingOutlook || existingSmtp) {
     throw new AppError("Sender with this email already exists", 409);
   }
 
-  // Test SMTP connection
-  try {
-    await verifySmtp({
-      host: smtpHost,
-      port: smtpPort,
-      secure: smtpSecure,
-      user: smtpUser,
-      password: smtpPassword,
-    });
-  } catch (err) {
-    throw new AppError(`SMTP connection failed: ${err.message}`, 400);
-  }
+  // Verify SMTP
+  await verifySmtp({
+    host: smtpHost,
+    port: smtpPort,
+    secure: smtpSecure,
+    user: smtpUser,
+    password: smtpPassword,
+  });
 
-  // Test IMAP connection
-  try {
-    await verifyImap({
-      host: imapHost,
-      port: imapPort,
-      secure: imapSecure,
-      user: imapUser,
-      password: imapPassword,
-    });
-  } catch (err) {
-    throw new AppError(`IMAP connection failed: ${err.message}`, 400);
-  }
+  // Verify IMAP
+  await verifyImap({
+    host: imapHost,
+    port: imapPort,
+    secure: imapSecure,
+    user: imapUser,
+    password: imapPassword,
+  });
 
-  // Create SMTP sender
   const sender = await SmtpSender.create({
     userId: req.user.id,
-    email: email.toLowerCase(),
+    email: emailLower,
     displayName,
-    domain: email.split("@")[1],
+    domain,
 
-    // SMTP settings
     smtpHost,
     smtpPort,
     smtpSecure,
     smtpUsername: smtpUser,
-    smtpPassword: smtpPassword,
+    smtpPassword,
 
-    // IMAP settings
     imapHost,
     imapPort,
     imapSecure,
     imapUsername: imapUser,
-    imapPassword: imapPassword,
+    imapPassword,
 
-    // Additional settings
     provider,
     dailyLimit,
     hourlyLimit,
 
-    // Test results
     smtpTestResult: { success: true, testedAt: new Date() },
     imapTestResult: { success: true, testedAt: new Date() },
     lastTestedAt: new Date(),
 
-    // State
     isVerified: true,
     isActive: true,
   });
 
+  // Run health check async
+  senderHealthService.evaluateSender(sender.id).catch(console.error);
+
   res.status(201).json({
     success: true,
-    data: {
-      ...sender.toJSON(),
-      type: "smtp",
-    },
+    data: { ...sender.toJSON(), type: "smtp" },
   });
 });
 
@@ -334,6 +314,19 @@ export const bulkUploadSenders = asyncHandler(async (req, res) => {
 
       if (verifiedBatch.length > 0) {
         await SmtpSender.bulkCreate(verifiedBatch);
+        
+        // 🛡️ Trigger health checks for all successful verified senders
+        // Fetch them back to get IDs
+        const createdSenders = await SmtpSender.findAll({
+          where: { email: verifiedBatch.map(s => s.email), userId },
+          attributes: ['id']
+        });
+
+        createdSenders.forEach(s => {
+          senderHealthService.evaluateSender(s.id).catch(err => {
+             console.error(`❌ Health evaluation failed for sender ${s.id}:`, err);
+          });
+        });
       }
     }
   }
@@ -396,6 +389,11 @@ export const listSenders = asyncHandler(async (req, res) => {
         smtpHost: sender.smtpHost,
         smtpPort: sender.smtpPort,
         domain: sender.domain,
+        /* DKIM & Reputation */
+        dkimEnabled: sender.dkimEnabled,
+        dkimSelector: sender.dkimSelector,
+        dkimPrivateKey: sender.dkimPrivateKey,
+        sendingIp: sender.sendingIp,
       })),
       ...gmailSenders.map((sender) => ({
         id: sender.id,

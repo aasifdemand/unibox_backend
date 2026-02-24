@@ -1,4 +1,6 @@
 import "../models/index.js";
+import { initGlobalErrorHandlers } from "../utils/error-handler.js";
+initGlobalErrorHandlers();
 import Redis from "ioredis";
 import Email from "../models/email.model.js";
 import GmailSender from "../models/gmail-sender.model.js";
@@ -115,103 +117,123 @@ function applyReputationThrottle(policy, reputationScore) {
    ROUTER WORKER
 ========================= */
 
-(async () => {
-  const channel = await getChannel();
-  await channel.assertQueue(QUEUES.EMAIL_ROUTE, { durable: true });
-  await channel.assertQueue(QUEUES.EMAIL_SEND, { durable: true });
-  channel.prefetch(5);
+async function startWorker() {
+  let channel;
+  try {
+    channel = await getChannel();
+    await channel.assertQueue(QUEUES.EMAIL_ROUTE, { durable: true });
+    await channel.assertQueue(QUEUES.EMAIL_SEND, { durable: true });
+    channel.prefetch(5);
 
-  log("INFO", "Advanced Email Router Started");
+    log("INFO", "Advanced Email Router Started");
 
-  channel.consume(QUEUES.EMAIL_ROUTE, async (msg) => {
-    if (!msg) return;
+    channel.consume(QUEUES.EMAIL_ROUTE, async (msg) => {
+      if (!msg) return;
 
-    try {
-      const { emailId } = JSON.parse(msg.content.toString());
-      const email = await Email.findByPk(emailId);
+      log("DEBUG", "📥 Received routing request", { content: msg.content.toString() });
 
-      if (!email || email.status !== "pending") {
-        return channel.ack(msg);
-      }
+      try {
+        const { emailId } = JSON.parse(msg.content.toString());
+        const email = await Email.findByPk(emailId);
 
-      const sender = await getSender(email.senderType, email.senderId);
-      if (!sender || !sender.isVerified) {
-        throw new Error("Sender not verified");
-      }
+        if (!email || email.status !== "pending") {
+          return channel.ack(msg);
+        }
 
-      /* =========================
-         REPUTATION CHECK
-      ========================= */
+        const sender = await getSender(email.senderType, email.senderId);
+        if (!sender || !sender.isVerified) {
+          throw new Error("Sender not verified");
+        }
 
-      const health = await SenderHealth.findOne({
-        where: { senderId: email.senderId },
-      });
+        /* =========================
+           REPUTATION CHECK
+        ========================= */
 
-      const reputationScore = health?.reputationScore ?? 100;
+        const health = await SenderHealth.findOne({
+          where: { senderId: email.senderId },
+        });
 
-      /* =========================
-         MTA DETECTION
-      ========================= */
+        const reputationScore = health?.reputationScore ?? 100;
 
-      const mta = await mtaDetectorCache.detect(email.recipientEmail);
+        /* =========================
+           MTA DETECTION
+        ========================= */
 
-      let policy = buildBasePolicy(mta, email.senderType);
-      policy = applyReputationThrottle(policy, reputationScore);
+        log("DEBUG", "🔍 Detecting MTA", { recipient: email.recipientEmail });
+        const mta = await mtaDetectorCache.detect(email.recipientEmail);
+        log("DEBUG", "✅ MTA Detected", { provider: mta.provider });
 
-      /* =========================
-         RATE LIMIT (PER SENDER)
-      ========================= */
+        let policy = buildBasePolicy(mta, email.senderType);
+        policy = applyReputationThrottle(policy, reputationScore);
 
-      const minuteWindow = Math.floor(Date.now() / 60000);
-      const rateKey = `rate:${email.senderId}:${minuteWindow}`;
+        /* =========================
+           RATE LIMIT (PER SENDER)
+        ========================= */
 
-      const count = await redis.incr(rateKey);
-      await redis.expire(rateKey, 60);
+        const minuteWindow = Math.floor(Date.now() / 60000);
+        const rateKey = `rate:${email.senderId}:${minuteWindow}`;
 
-      if (count > policy.limitPerMinute) {
-        await redis.decr(rateKey);
-        setTimeout(() => {
-          channel.sendToQueue(QUEUES.EMAIL_ROUTE, msg.content, {
-            persistent: true,
-          });
-        }, 4000);
+        const count = await redis.incr(rateKey);
+        await redis.expire(rateKey, 60);
 
-        return channel.ack(msg);
-      }
+        if (count > policy.limitPerMinute) {
+          await redis.decr(rateKey);
+          log("DEBUG", "⏳ Rate limited, requeuing", { emailId });
+          setTimeout(() => {
+            channel.sendToQueue(QUEUES.EMAIL_ROUTE, msg.content, {
+              persistent: true,
+            });
+          }, 4000);
 
-      /* =========================
-         CHUNK CONTROL
-      ========================= */
+          return channel.ack(msg);
+        }
 
-      const chunkKey = `chunk:${email.senderId}:${minuteWindow}`;
-      const chunkCount = await redis.incr(chunkKey);
-      await redis.expire(chunkKey, 60);
+        /* =========================
+           CHUNK CONTROL
+        ========================= */
 
-      if (chunkCount % policy.chunkSize === 0) {
-        await new Promise((r) =>
-          setTimeout(r, policy.delayMs + Math.floor(Math.random() * 2000)),
+        const chunkKey = `chunk:${email.senderId}:${minuteWindow}`;
+        const chunkCount = await redis.incr(chunkKey);
+        await redis.expire(chunkKey, 60);
+
+        if (chunkCount % policy.chunkSize === 0) {
+          const delay = policy.delayMs + Math.floor(Math.random() * 2000);
+          log("DEBUG", "⏸️ Applying chunk delay", { delay });
+          await new Promise((r) => setTimeout(r, delay));
+        }
+
+        await email.update({
+          deliveryProvider: mta.provider,
+          deliveryConfidence: mta.confidence,
+          routedAt: new Date(),
+          status: "routed",
+        });
+
+        channel.sendToQueue(
+          QUEUES.EMAIL_SEND,
+          Buffer.from(
+            JSON.stringify({ emailId, senderType: email.senderType, policy }),
+          ),
+          { persistent: true },
         );
+
+        channel.ack(msg);
+      } catch (err) {
+        log("ERROR", "Routing failed", { error: err.message, stack: err.stack });
+        channel.ack(msg);
       }
+    });
 
-      await email.update({
-        deliveryProvider: mta.provider,
-        deliveryConfidence: mta.confidence,
-        routedAt: new Date(),
-        status: "routed",
-      });
+    // Listen for channel closure to trigger restart
+    channel.on("close", () => {
+      log("WARN", "Channel closed, restarting in 5s...");
+      setTimeout(startWorker, 5000);
+    });
 
-      channel.sendToQueue(
-        QUEUES.EMAIL_SEND,
-        Buffer.from(
-          JSON.stringify({ emailId, senderType: email.senderType, policy }),
-        ),
-        { persistent: true },
-      );
+  } catch (err) {
+    log("ERROR", "Worker failed to start", { error: err.message });
+    setTimeout(startWorker, 5000);
+  }
+}
 
-      channel.ack(msg);
-    } catch (err) {
-      log("ERROR", "Routing failed", { error: err.message });
-      channel.ack(msg);
-    }
-  });
-})();
+startWorker();

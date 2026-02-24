@@ -1,3 +1,4 @@
+import { Op } from "sequelize";
 import dns from "dns/promises";
 import SenderHealth from "../models/sender-health.model.js";
 import SmtpSender from "../models/smtp-sender.model.js";
@@ -71,6 +72,54 @@ class SenderHealthService {
     }
   }
 
+  /**
+   * Auto-discover the active DKIM selector for a domain by probing common
+   * selector names against DNS.
+   *
+   * NOTE: DNS only exposes the PUBLIC key — the private key lives on the
+   * provider's server (aaPanel / Postal) and signs emails at the MTA level.
+   * We store the selector so the health checker can validate the record, but
+   * pass privateKey: null so Nodemailer does NOT attempt its own signing
+   * (the MTA already handles it).
+   *
+   * @param {string} domain - e.g. "example.com"
+   * @returns {{ selector: string, privateKey: null } | null}
+   */
+  async getDkimForDomain(domain) {
+    const commonSelectors = [
+      "default",
+      "mail",
+      "dkim",
+      "google",
+      "smtp",
+      "key1",
+      "k1",
+      "selector1",
+      "selector2",
+      "email",
+      "s1",
+      "s2",
+    ];
+
+    for (const selector of commonSelectors) {
+      try {
+        const records = await dns.resolveTxt(
+          `${selector}._domainkey.${domain}`
+        );
+        const joined = records.flat().join("");
+        if (joined.includes("v=DKIM1")) {
+          // Found a valid DKIM public record — return the selector only.
+          // Private key is kept on the provider's MTA; we don't manage it.
+          return { selector, privateKey: null };
+        }
+      } catch {
+        // No record for this selector — try next
+      }
+    }
+
+    return null; // No DKIM record found for the domain
+  }
+
   async checkDMARC(domain) {
     try {
       const record = await dns.resolveTxt(`_dmarc.${domain}`);
@@ -112,11 +161,18 @@ class SenderHealthService {
     const last7Days = new Date(Date.now() - 7 * 86400000);
 
     const totalSent = await Email.count({
-      where: { senderId, sentAt: { $gte: last7Days } },
+      where: { senderId, sentAt: { [Op.gte]: last7Days } },
     });
 
     const bounces = await BounceEvent.count({
-      where: { senderId, createdAt: { $gte: last7Days } },
+      include: [
+        {
+          model: Email,
+          where: { senderId },
+          required: true,
+        },
+      ],
+      where: { createdAt: { [Op.gte]: last7Days } },
     });
 
     const bounceRate = totalSent ? (bounces / totalSent) * 100 : 0;
