@@ -7,7 +7,7 @@ import XLSX from "xlsx";
 import ListUploadBatch from "../models/list-upload-batch.model.js";
 import ListUploadRecord from "../models/list-upload-record.model.js";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
-import { Op, fn, col, literal } from "sequelize";
+import { Op, fn, literal } from "sequelize";
 import { asyncHandler } from "../helpers/async-handler.js";
 import sequelize from "../config/db.js";
 import {
@@ -290,7 +290,7 @@ const findNameField = (record) => {
 };
 
 // Async processing function
-const processUploadedFile = async (batchId, userId) => {
+const processUploadedFile = async (batchId) => {
   let batch;
   try {
     batch = await ListUploadBatch.findByPk(batchId);
@@ -402,6 +402,8 @@ const processRecords = async (batch, records) => {
         normalizedToRaw.set(normalizedEmail, { domain });
       }
     } catch (err) {
+      console.log("error: ", err);
+
       // Logic for invalid records can stay as is or be simplified
     }
   }
@@ -513,7 +515,7 @@ export const getBatchVerificationStats = async (batchId) => {
           fn(
             "SUM",
             literal(
-              `CASE WHEN "GlobalEmailRegistry"."verificationStatus" = 'valid' THEN 1 ELSE 0 END`,
+              'CASE WHEN "GlobalEmailRegistry"."verificationStatus" = \'valid\' THEN 1 ELSE 0 END',
             ),
           ),
           "validCount",
@@ -522,7 +524,7 @@ export const getBatchVerificationStats = async (batchId) => {
           fn(
             "SUM",
             literal(
-              `CASE WHEN "GlobalEmailRegistry"."verificationStatus" = 'invalid' THEN 1 ELSE 0 END`,
+              'CASE WHEN "GlobalEmailRegistry"."verificationStatus" = \'invalid\' THEN 1 ELSE 0 END',
             ),
           ),
           "invalidCount",
@@ -531,7 +533,7 @@ export const getBatchVerificationStats = async (batchId) => {
           fn(
             "SUM",
             literal(
-              `CASE WHEN "GlobalEmailRegistry"."verificationStatus" = 'risky' THEN 1 ELSE 0 END`,
+              'CASE WHEN "GlobalEmailRegistry"."verificationStatus" = \'risky\' THEN 1 ELSE 0 END',
             ),
           ),
           "riskyCount",
@@ -704,7 +706,7 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
     attributes: [
       [
         literal(
-          `COALESCE("GlobalEmailRegistry"."verificationStatus", 'unknown')`,
+          'COALESCE("GlobalEmailRegistry"."verificationStatus", \'unknown\')',
         ),
         "verificationStatus",
       ],
@@ -712,7 +714,7 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
     ],
     group: [
       literal(
-        `COALESCE("GlobalEmailRegistry"."verificationStatus", 'unknown')`,
+        'COALESCE("GlobalEmailRegistry"."verificationStatus", \'unknown\')',
       ),
     ],
     raw: true,
@@ -864,6 +866,33 @@ export const retryBatch = asyncHandler(async (req, res) => {
     message: "Batch retry initiated",
   });
 });
+
+// Helper to convert data to CSV
+const convertToCSV = (data) => {
+  if (!data || data.length === 0) return "";
+  const headers = Object.keys(data[0].get ? data[0].get({ plain: true }) : data[0]);
+  const rows = data.map((item) => {
+    const rawData = item.get ? item.get({ plain: true }) : item;
+    return headers
+      .map((header) => {
+        const value = rawData[header];
+        return typeof value === "string" ? `"${value.replace(/"/g, '""')}"` : value;
+      })
+      .join(",");
+  });
+  return [headers.join(","), ...rows].join("\n");
+};
+
+// Helper to convert data to XLSX
+const convertToXLSX = (data) => {
+  const jsonData = data.map((item) =>
+    item.get ? item.get({ plain: true }) : item,
+  );
+  const worksheet = XLSX.utils.json_to_sheet(jsonData);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Export");
+  return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+};
 
 // Export batch
 export const exportBatch = asyncHandler(async (req, res) => {

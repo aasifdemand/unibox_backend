@@ -99,7 +99,7 @@ export const getGlobalOverview = asyncHandler(async (req, res) => {
           Sequelize.fn(
             "AVG",
             Sequelize.literal(
-              'CASE WHEN "totalSent" > 0 THEN ("totalOpens"::float / "totalSent") * 100 ELSE 0 END',
+              "CASE WHEN \"totalSent\" > 0 THEN (\"totalOpens\"::float / \"totalSent\") * 100 ELSE 0 END",
             ),
           ),
           "avgOpenRate",
@@ -116,7 +116,7 @@ export const getGlobalOverview = asyncHandler(async (req, res) => {
           Sequelize.fn(
             "AVG",
             Sequelize.literal(
-              'CASE WHEN "totalSent" > 0 THEN ("totalReplied"::float / "totalSent") * 100 ELSE 0 END',
+              "CASE WHEN \"totalSent\" > 0 THEN (\"totalReplied\"::float / \"totalSent\") * 100 ELSE 0 END",
             ),
           ),
           "avgReplyRate",
@@ -161,19 +161,19 @@ export const getPerformanceMetrics = asyncHandler(async (req, res) => {
       "totalReplied",
       [
         Sequelize.literal(
-          'CASE WHEN "totalSent" > 0 THEN ("totalOpens"::float / "totalSent") * 100 ELSE 0 END',
+          "CASE WHEN \"totalSent\" > 0 THEN (\"totalOpens\"::float / \"totalSent\") * 100 ELSE 0 END",
         ),
         "openRate",
       ],
       [
         Sequelize.literal(
-          'CASE WHEN "totalSent" > 0 THEN ("totalClicks"::float / "totalSent") * 100 ELSE 0 END',
+          "CASE WHEN \"totalSent\" > 0 THEN (\"totalClicks\"::float / \"totalSent\") * 100 ELSE 0 END",
         ),
         "clickRate",
       ],
       [
         Sequelize.literal(
-          'CASE WHEN "totalSent" > 0 THEN ("totalReplied"::float / "totalSent") * 100 ELSE 0 END',
+          "CASE WHEN \"totalSent\" > 0 THEN (\"totalReplied\"::float / \"totalSent\") * 100 ELSE 0 END",
         ),
         "replyRate",
       ],
@@ -321,13 +321,13 @@ export const getTimelineData = asyncHandler(async (req, res) => {
       ],
       [
         Sequelize.literal(
-          'COUNT(DISTINCT CASE WHEN "email"."openedAt" IS NOT NULL THEN "email"."id" END)',
+          "COUNT(DISTINCT CASE WHEN \"email\".\"openedAt\" IS NOT NULL THEN \"email\".\"id\" END)",
         ),
         "opens",
       ],
       [
         Sequelize.literal(
-          'COUNT(DISTINCT CASE WHEN "email->replies"."id" IS NOT NULL THEN "email->replies"."id" END)',
+          "COUNT(DISTINCT CASE WHEN \"email->replies\".\"id\" IS NOT NULL THEN \"email->replies\".\"id\" END)",
         ),
         "replies",
       ],
@@ -405,7 +405,7 @@ export const getTopCampaigns = asyncHandler(async (req, res) => {
       "totalReplied",
       [
         Sequelize.literal(
-          'CASE WHEN "totalSent" > 0 THEN ("totalReplied"::float / "totalSent") * 100 ELSE 0 END',
+          "CASE WHEN \"totalSent\" > 0 THEN (\"totalReplied\"::float / \"totalSent\") * 100 ELSE 0 END",
         ),
         "replyRate",
       ],
@@ -592,14 +592,14 @@ export const getHourlyStats = asyncHandler(async (req, res) => {
     ],
     attributes: [
       [
-        Sequelize.fn("EXTRACT", Sequelize.literal('HOUR FROM "sentAt"')),
+        Sequelize.fn("EXTRACT", Sequelize.literal("HOUR FROM \"sentAt\"")),
         "hour",
       ],
       [Sequelize.fn("COUNT", Sequelize.col("CampaignSend.id")), "count"],
     ],
-    group: [Sequelize.fn("EXTRACT", Sequelize.literal('HOUR FROM "sentAt"'))],
+    group: [Sequelize.fn("EXTRACT", Sequelize.literal("HOUR FROM \"sentAt\""))],
     order: [
-      [Sequelize.fn("EXTRACT", Sequelize.literal('HOUR FROM "sentAt"')), "ASC"],
+      [Sequelize.fn("EXTRACT", Sequelize.literal("HOUR FROM \"sentAt\"")), "ASC"],
     ],
   });
 

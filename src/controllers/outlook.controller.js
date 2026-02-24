@@ -21,8 +21,8 @@ const httpsAgent = new https.Agent({
 
 // Cache TTLs
 const CACHE_TTL = {
-  MESSAGES: 1200,       // 20 minutes
-  FOLDERS: 1800,        // 30 minutes
+  MESSAGES: 1200, // 20 minutes
+  FOLDERS: 1800, // 30 minutes
   SINGLE_MESSAGE: 3600, // 60 minutes
 };
 
@@ -208,92 +208,6 @@ export const getOutlookMessages = asyncHandler(async (req, res) => {
     res.json({ success: true, data: result });
   });
 });
-
-// =========================
-// BACKGROUND REFRESH HELPER
-// =========================
-const refreshOutlookMessagesInBackground = async (
-  mailboxId,
-  userId,
-  folderId,
-  skipToken,
-  top,
-  search,
-  cacheKey,
-  staleKey,
-) => {
-  try {
-    const sender = await OutlookSender.findOne({
-      where: { id: mailboxId, userId, isVerified: true },
-      attributes: ["id", "email", "refreshToken", "accessToken", "expiresAt"],
-    });
-
-    if (!sender) return;
-
-    const client = await getOutlookClient(sender);
-
-    let pageSize = Math.min(parseInt(top) || 10, 100);
-
-    const folderMap = {
-      inbox: "/me/mailFolders/inbox/messages",
-      sent: "/me/mailFolders/sentitems/messages",
-      sentitems: "/me/mailFolders/sentitems/messages",
-      drafts: "/me/mailFolders/drafts/messages",
-      trash: "/me/mailFolders/deleteditems/messages",
-      deleteditems: "/me/mailFolders/deleteditems/messages",
-      spam: "/me/mailFolders/junkemail/messages",
-      junkemail: "/me/mailFolders/junkemail/messages",
-      archive: "/me/mailFolders/archive/messages",
-      outbox: "/me/mailFolders/outbox/messages",
-    };
-
-    const endpoint =
-      folderMap[folderId.toLowerCase()] ||
-      `/me/mailFolders/${folderId}/messages`;
-
-    const params = {
-      $top: pageSize,
-      $orderby: "receivedDateTime desc",
-      $select:
-        "id,subject,from,toRecipients,bodyPreview,receivedDateTime,isRead,parentFolderId,hasAttachments",
-      $count: "true",
-    };
-
-    if (skipToken) {
-      params.$skiptoken = skipToken;
-    }
-
-    const response = await client.get(endpoint, { params });
-
-    let nextSkipToken = null;
-    if (response.data["@odata.nextLink"]) {
-      const url = new URL(response.data["@odata.nextLink"]);
-      nextSkipToken = url.searchParams.get("$skiptoken");
-    }
-
-    const messages = (response.data.value || []).map((msg) => ({
-      ...msg,
-      folder: folderId,
-      folderType: mapOutlookFolderToType(folderId),
-    }));
-
-    const result = {
-      messages,
-      nextSkipToken,
-      nextLink: response.data["@odata.nextLink"] || null,
-      count: response.data["@odata.count"] || 0,
-      folderId,
-      folderType: mapOutlookFolderToType(folderId),
-    };
-
-    await Promise.all([
-      setCachedData(cacheKey, result, CACHE_TTL.MESSAGES),
-      setCachedData(staleKey, result, CACHE_TTL.MESSAGES * 2),
-    ]);
-  } catch (err) {
-    console.error("Background refresh failed:", err);
-  }
-};
 
 // =========================
 // GET OUTLOOK FOLDERS (with caching)
@@ -1056,7 +970,7 @@ export const sendOutlookMessage = asyncHandler(async (req, res) => {
 export const replyToOutlookMessage = asyncHandler(async (req, res) => {
   const { mailboxId, messageId } = req.params;
   const userId = req.user.id;
-  const { body, html, replyAll = false, attachments = [] } = req.body;
+  const { body, html, replyAll = false } = req.body;
 
   if (!body && !html) {
     throw new AppError("Message body is required", 400);
@@ -1136,7 +1050,7 @@ export const replyToOutlookMessage = asyncHandler(async (req, res) => {
 export const forwardOutlookMessage = asyncHandler(async (req, res) => {
   const { mailboxId, messageId } = req.params;
   const userId = req.user.id;
-  const { to, body, html, attachments = [] } = req.body;
+  const { to, body, html } = req.body;
 
   if (!to || (!body && !html)) {
     throw new AppError("Recipient and message body are required", 400);

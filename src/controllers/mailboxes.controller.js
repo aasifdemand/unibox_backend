@@ -526,7 +526,7 @@ export const getOutlookMessages = asyncHandler(async (req, res) => {
       headers: {
         Authorization: `Bearer ${token}`,
         // ✅ CHANGE THIS - Request HTML format
-        Prefer: 'outlook.body-content-type="html"',
+        Prefer: "outlook.body-content-type=\"html\"",
       },
       params,
     });
@@ -793,7 +793,7 @@ export const getOutlookMessage = asyncHandler(async (req, res) => {
       headers: {
         Authorization: `Bearer ${token}`,
         // ✅ CHANGE THIS - Request HTML format instead of text
-        Prefer: 'outlook.body-content-type="html"',
+        Prefer: "outlook.body-content-type=\"html\"",
       },
       params: {
         // ✅ Also explicitly request HTML

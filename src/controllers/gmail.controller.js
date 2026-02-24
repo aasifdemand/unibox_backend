@@ -14,12 +14,12 @@ import { withRateLimit, clearMailboxLimiter } from "../utils/rate-limiter.js";
 
 // Cache TTLs (in seconds)
 const CACHE_TTL = {
-  MESSAGES: 900,       // 15 minutes
-  LABELS: 1200,        // 20 minutes
+  MESSAGES: 900, // 15 minutes
+  LABELS: 1200, // 20 minutes
   SINGLE_MESSAGE: 3600, // 60 minutes
-  DRAFTS: 900,         // 15 minutes
-  THREADS: 1200,       // 20 minutes
-  PROFILE: 3600,       // 1 hour
+  DRAFTS: 900, // 15 minutes
+  THREADS: 1200, // 20 minutes
+  PROFILE: 3600, // 1 hour
 };
 
 // =========================
@@ -510,6 +510,8 @@ export const getGmailLabels = asyncHandler(async (req, res) => {
             sentCount: sentCount,
           };
         } catch (error) {
+          console.log("error: ", error);
+
           return {
             id: label.id,
             name: label.name,
@@ -1121,7 +1123,7 @@ const mapGmailLabelToFolder = (labelId, labelName) => {
 export const sendGmailMessage = asyncHandler(async (req, res) => {
   const { mailboxId } = req.params;
   const userId = req.user.id;
-  const { to, cc, bcc, subject, body, html, attachments = [] } = req.body;
+  const { to, cc, bcc, subject, body, html } = req.body;
 
   if (!to || !subject || (!body && !html)) {
     throw new AppError("To, subject, and message body are required", 400);
@@ -1200,7 +1202,7 @@ export const sendGmailMessage = asyncHandler(async (req, res) => {
 export const replyToGmailMessage = asyncHandler(async (req, res) => {
   const { mailboxId, messageId } = req.params;
   const userId = req.user.id;
-  const { body, html, replyAll = false, attachments = [] } = req.body;
+  const { body, html, replyAll = false } = req.body;
 
   if (!body && !html) {
     throw new AppError("Message body is required", 400);
@@ -1335,7 +1337,7 @@ export const replyToGmailMessage = asyncHandler(async (req, res) => {
 export const forwardGmailMessage = asyncHandler(async (req, res) => {
   const { mailboxId, messageId } = req.params;
   const userId = req.user.id;
-  const { to, body, html, attachments = [] } = req.body;
+  const { to, body, html } = req.body;
 
   if (!to || (!body && !html)) {
     throw new AppError("Recipient and message body are required", 400);
@@ -1437,7 +1439,7 @@ export const forwardGmailMessage = asyncHandler(async (req, res) => {
 export const createGmailDraft = asyncHandler(async (req, res) => {
   const { mailboxId } = req.params;
   const userId = req.user.id;
-  const { to, cc, bcc, subject, body, html, attachments = [] } = req.body;
+  const { to, cc, bcc, subject, body, html } = req.body;
 
   const sender = await GmailSender.findOne({
     where: { id: mailboxId, userId, isVerified: true },
@@ -1510,7 +1512,7 @@ export const createGmailDraft = asyncHandler(async (req, res) => {
 export const updateGmailDraft = asyncHandler(async (req, res) => {
   const { mailboxId, draftId } = req.params;
   const userId = req.user.id;
-  const { to, cc, bcc, subject, body, html, attachments = [] } = req.body;
+  const { to, cc, bcc, subject, body, html } = req.body;
 
   const sender = await GmailSender.findOne({
     where: { id: mailboxId, userId, isVerified: true },

@@ -1,4 +1,4 @@
-import sequelize from './src/config/db.js';
+import sequelize from "./src/config/db.js";
 
 (async () => {
   try {

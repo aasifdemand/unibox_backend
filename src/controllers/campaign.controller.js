@@ -69,7 +69,10 @@ export const getCampaigns = asyncHandler(async (req, res) => {
     ],
     attributes: [
       "batchId",
-      [sequelize.fn("COUNT", sequelize.col("ListUploadRecord.id")), "validCount"],
+      [
+        sequelize.fn("COUNT", sequelize.col("ListUploadRecord.id")),
+        "validCount",
+      ],
     ],
     group: ["batchId"],
     raw: true,
@@ -163,7 +166,6 @@ export const createCampaign = asyncHandler(async (req, res) => {
     senderId,
     senderType,
     listBatchId,
-    scheduleType,
     scheduledAt,
     timezone,
     throttlePerMinute,

@@ -1,3 +1,4 @@
+/* eslint-disable no-unused-vars */
 // controllers/smtp.controller.js
 import Imap from "imap";
 import { simpleParser } from "mailparser";
@@ -14,10 +15,10 @@ import { withRateLimit, clearMailboxLimiter } from "../utils/rate-limiter.js";
 import util from "util";
 
 // Cache TTLs
-const CACHE_TTL = {
-  MESSAGES: 1200,      // 20 minutes
-  FOLDERS: 1800,       // 30 minutes
-  SINGLE_MESSAGE: 3600, // 60 minutes
+const CACHEerrTTL = {
+  MESSAGES: 1200, // 20 minutes
+  FOLDERS: 1800, // 30 minutes
+  SINGLEerrMESSAGE: 3600, // 60 minutes
 };
 
 function createImapConnection(sender) {
@@ -35,9 +36,15 @@ function createImapConnection(sender) {
   const connected = new Promise((resolve, reject) => {
     imap.once("ready", () => resolve(imap));
     imap.once("error", (err) => {
-      const isAuthError = err.message.toLowerCase().includes("authentication failed") || 
-                         err.message.toLowerCase().includes("invalid credentials");
-      reject(new AppError(`IMAP connection failed: ${err.message}`, isAuthError ? 401 : 500));
+      const isAuthError =
+        err.message.toLowerCase().includes("authentication failed") ||
+        err.message.toLowerCase().includes("invalid credentials");
+      reject(
+        new AppError(
+          `IMAP connection failed: ${err.message}`,
+          isAuthError ? 401 : 500,
+        ),
+      );
     });
     imap.connect();
   });
@@ -64,7 +71,7 @@ async function resolveFolder(imap, sender, friendlyName) {
     host.includes("office365");
 
   // --- Static mappings -------------------------------------------------------
-  const GMAIL_MAP = {
+  const GMAILerrMAP = {
     INBOX: "INBOX",
     SENT: "[Gmail]/Sent Mail",
     DRAFTS: "[Gmail]/Drafts",
@@ -75,7 +82,7 @@ async function resolveFolder(imap, sender, friendlyName) {
     IMPORTANT: "[Gmail]/Important",
   };
 
-  const OUTLOOK_MAP = {
+  const OUTLOOKerrMAP = {
     INBOX: "INBOX",
     SENT: "Sent Items",
     DRAFTS: "Drafts",
@@ -85,17 +92,19 @@ async function resolveFolder(imap, sender, friendlyName) {
   };
 
   // Return a known mapping immediately if available
-  if (isGmail && GMAIL_MAP[upper]) return GMAIL_MAP[upper];
-  if (isOutlook && OUTLOOK_MAP[upper]) return OUTLOOK_MAP[upper];
+  if (isGmail && GMAILerrMAP[upper]) return GMAILerrMAP[upper];
+  if (isOutlook && OUTLOOKerrMAP[upper]) return OUTLOOKerrMAP[upper];
 
   // If not a special folder or unknown provider, try the name directly first
   // but fall back to a fuzzy search against the real folder list
   const candidateNames = [friendlyName];
-  if (upper === "SENT") candidateNames.push("Sent Items", "Sent", "[Gmail]/Sent Mail");
+  if (upper === "SENT")
+    candidateNames.push("Sent Items", "Sent", "[Gmail]/Sent Mail");
   if (upper === "DRAFTS") candidateNames.push("Drafts", "[Gmail]/Drafts");
   if (upper === "TRASH")
     candidateNames.push("Deleted Items", "Trash", "[Gmail]/Trash", "Bin");
-  if (upper === "SPAM") candidateNames.push("Junk Email", "Junk", "[Gmail]/Spam");
+  if (upper === "SPAM")
+    candidateNames.push("Junk Email", "Junk", "[Gmail]/Spam");
   if (upper === "ARCHIVE") candidateNames.push("[Gmail]/All Mail", "Archive");
 
   // Flatten the live box list and match against our candidates
@@ -110,7 +119,9 @@ async function resolveFolder(imap, sender, friendlyName) {
       );
       if (match) return match;
     }
-  } catch (_) {
+  } catch (error) {
+    console.log(error);
+
     // Ignore — fall through to the raw name
   }
 
@@ -187,10 +198,6 @@ function fetchUidsForRange(imap, range) {
   });
 }
 
-// Keep a small pool just for the disconnect operation which has no folder state
-const _closableConns = new Map();
-
-
 // =========================
 // BATCH MESSAGE PARSER
 // =========================
@@ -247,7 +254,12 @@ async function fetchSmtpMessagesForFolder(req, res, folder) {
     const currentPage = Math.max(parseInt(page) || 1, 1);
 
     const cacheKey = generateCacheKey(
-      "smtp", mailboxId, "messages", folder, currentPage, pageSize,
+      "smtp",
+      mailboxId,
+      "messages",
+      folder,
+      currentPage,
+      pageSize,
     );
 
     // Check cache first
@@ -272,10 +284,20 @@ async function fetchSmtpMessagesForFolder(req, res, folder) {
       try {
         box = await openFolder(imap, resolvedFolder);
       } catch (err) {
+        console.log(err);
+
         // Folder doesn't exist on this account
         return res.json({
           success: true,
-          data: { messages: [], totalCount: 0, currentPage, totalPages: 0, folder, limit: pageSize, hasMore: false },
+          data: {
+            messages: [],
+            totalCount: 0,
+            currentPage,
+            totalPages: 0,
+            folder,
+            limit: pageSize,
+            hasMore: false,
+          },
         });
       }
 
@@ -284,7 +306,15 @@ async function fetchSmtpMessagesForFolder(req, res, folder) {
       if (totalMessages === 0) {
         return res.json({
           success: true,
-          data: { messages: [], totalCount: 0, currentPage, totalPages: 0, folder, limit: pageSize, hasMore: false },
+          data: {
+            messages: [],
+            totalCount: 0,
+            currentPage,
+            totalPages: 0,
+            folder,
+            limit: pageSize,
+            hasMore: false,
+          },
         });
       }
 
@@ -293,7 +323,15 @@ async function fetchSmtpMessagesForFolder(req, res, folder) {
       if (currentPage > totalPages) {
         return res.json({
           success: true,
-          data: { messages: [], totalCount: totalMessages, currentPage, totalPages, folder, limit: pageSize, hasMore: false },
+          data: {
+            messages: [],
+            totalCount: totalMessages,
+            currentPage,
+            totalPages,
+            folder,
+            limit: pageSize,
+            hasMore: false,
+          },
         });
       }
 
@@ -306,7 +344,15 @@ async function fetchSmtpMessagesForFolder(req, res, folder) {
       if (rangeStart > rangeEnd || rangeStart < 1) {
         return res.json({
           success: true,
-          data: { messages: [], totalCount: totalMessages, currentPage, totalPages, folder, limit: pageSize, hasMore: currentPage < totalPages },
+          data: {
+            messages: [],
+            totalCount: totalMessages,
+            currentPage,
+            totalPages,
+            folder,
+            limit: pageSize,
+            hasMore: currentPage < totalPages,
+          },
         });
       }
 
@@ -335,10 +381,14 @@ async function fetchSmtpMessagesForFolder(req, res, folder) {
       // Update last sync silently
       sender.update({ lastInboxSyncAt: new Date() }).catch(() => {});
 
-      await setCachedData(cacheKey, result, CACHE_TTL.MESSAGES);
+      await setCachedData(cacheKey, result, CACHEerrTTL.MESSAGES);
       res.json({ success: true, data: result });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {
+        console.log(err);
+      }
     }
   });
 }
@@ -373,8 +423,6 @@ export const getSmtpArchiveMessages = asyncHandler(async (req, res) => {
   return fetchSmtpMessagesForFolder(req, res, "ARCHIVE");
 });
 
-
-
 // =========================
 // GET SMTP FOLDERS (BATCH OPTIMIZED)
 // =========================
@@ -403,13 +451,17 @@ export const getSmtpFolders = asyncHandler(async (req, res) => {
       const processFolders = (boxObj, parentPath = "") => {
         let folders = [];
         for (const [name, box] of Object.entries(boxObj)) {
-          const fullPath = parentPath ? `${parentPath}${delimiter}${name}` : name;
+          const fullPath = parentPath
+            ? `${parentPath}${delimiter}${name}`
+            : name;
           folders.push({
             id: fullPath,
             name,
             fullPath,
             delimiter,
-            hasChildren: box.children ? Object.keys(box.children).length > 0 : false,
+            hasChildren: box.children
+              ? Object.keys(box.children).length > 0
+              : false,
             folderType: mapFolderType(fullPath),
           });
           if (box.children) {
@@ -423,9 +475,17 @@ export const getSmtpFolders = asyncHandler(async (req, res) => {
 
       const statusPromises = folders.map(async (folder) => {
         try {
-          const status = await util.promisify(imap.status).bind(imap)(folder.fullPath);
-          return { ...folder, totalCount: status.messages?.total || 0, unreadCount: status.messages?.unseen || 0 };
-        } catch (_) {
+          const status = await util.promisify(imap.status).bind(imap)(
+            folder.fullPath,
+          );
+          return {
+            ...folder,
+            totalCount: status.messages?.total || 0,
+            unreadCount: status.messages?.unseen || 0,
+          };
+        } catch (err) {
+          console.log(err);
+
           return { ...folder, totalCount: 0, unreadCount: 0 };
         }
       });
@@ -433,14 +493,24 @@ export const getSmtpFolders = asyncHandler(async (req, res) => {
       const foldersWithCounts = await Promise.all(statusPromises);
       foldersWithCounts.sort((a, b) => {
         const order = { INBOX: 1, SENT: 2, DRAFTS: 3, TRASH: 4, SPAM: 5 };
-        return (order[a.name.toUpperCase()] || 6) - (order[b.name.toUpperCase()] || 6) || a.name.localeCompare(b.name);
+        return (
+          (order[a.name.toUpperCase()] || 6) -
+            (order[b.name.toUpperCase()] || 6) || a.name.localeCompare(b.name)
+        );
       });
 
-      const result = { folders: foldersWithCounts, flatList: foldersWithCounts };
-      await setCachedData(cacheKey, result, CACHE_TTL.FOLDERS);
+      const result = {
+        folders: foldersWithCounts,
+        flatList: foldersWithCounts,
+      };
+      await setCachedData(cacheKey, result, CACHEerrTTL.FOLDERS);
       res.json({ success: true, data: result });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {
+        console.log(err);
+      }
     }
   });
 });
@@ -459,7 +529,13 @@ export const getSmtpMessage = asyncHandler(async (req, res) => {
   if (!sender) throw new AppError("SMTP mailbox not found", 404);
 
   return withRateLimit(mailboxId, "smtp", async () => {
-    const cacheKey = generateCacheKey("smtp", mailboxId, "message", messageId, folder);
+    const cacheKey = generateCacheKey(
+      "smtp",
+      mailboxId,
+      "message",
+      messageId,
+      folder,
+    );
 
     const cached = await getCachedData(cacheKey);
     if (cached) {
@@ -472,20 +548,29 @@ export const getSmtpMessage = asyncHandler(async (req, res) => {
       await openFolder(imap, resolvedFolder);
 
       const uid = parseInt(messageId);
-      const rawMessages = await fetchMessages(imap, [uid], { bodies: "", struct: true });
+      const rawMessages = await fetchMessages(imap, [uid], {
+        bodies: "",
+        struct: true,
+      });
 
-      if (rawMessages.length === 0) throw new AppError("Message not found", 404);
+      if (rawMessages.length === 0)
+        throw new AppError("Message not found", 404);
 
       const parsedMessages = await parseMessagesInParallel(rawMessages);
-      if (parsedMessages.length === 0) throw new AppError("Message not found", 404);
+      if (parsedMessages.length === 0)
+        throw new AppError("Message not found", 404);
 
       const message = parsedMessages[0];
       message.folder = folder;
 
-      await setCachedData(cacheKey, message, CACHE_TTL.SINGLE_MESSAGE);
+      await setCachedData(cacheKey, message, CACHEerrTTL.SINGLEerrMESSAGE);
       res.json({ success: true, data: message });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {
+        console.log(err);
+      }
     }
   });
 });
@@ -508,15 +593,23 @@ export const markSmtpAsRead = asyncHandler(async (req, res) => {
     try {
       const resolvedFolder = await resolveFolder(imap, sender, folder);
       await openFolder(imap, resolvedFolder);
-      await util.promisify(imap.addFlags).bind(imap)(parseInt(messageId), ["\\Seen"]);
+      await util.promisify(imap.addFlags).bind(imap)(parseInt(messageId), [
+        "\\Seen",
+      ]);
       Promise.all([
-        deleteCachedData(generateCacheKey("smtp", mailboxId, "messages", folder, "*")),
-        deleteCachedData(generateCacheKey("smtp", mailboxId, "message", messageId, folder)),
+        deleteCachedData(
+          generateCacheKey("smtp", mailboxId, "messages", folder, "*"),
+        ),
+        deleteCachedData(
+          generateCacheKey("smtp", mailboxId, "message", messageId, folder),
+        ),
         deleteCachedData(generateCacheKey("smtp", mailboxId, "folders")),
       ]).catch(() => {});
       res.json({ success: true, message: "Message marked as read" });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
   });
 });
@@ -539,15 +632,23 @@ export const markSmtpAsUnread = asyncHandler(async (req, res) => {
     try {
       const resolvedFolder = await resolveFolder(imap, sender, folder);
       await openFolder(imap, resolvedFolder);
-      await util.promisify(imap.delFlags).bind(imap)(parseInt(messageId), ["\\Seen"]);
+      await util.promisify(imap.delFlags).bind(imap)(parseInt(messageId), [
+        "\\Seen",
+      ]);
       Promise.all([
-        deleteCachedData(generateCacheKey("smtp", mailboxId, "messages", folder, "*")),
-        deleteCachedData(generateCacheKey("smtp", mailboxId, "message", messageId, folder)),
+        deleteCachedData(
+          generateCacheKey("smtp", mailboxId, "messages", folder, "*"),
+        ),
+        deleteCachedData(
+          generateCacheKey("smtp", mailboxId, "message", messageId, folder),
+        ),
         deleteCachedData(generateCacheKey("smtp", mailboxId, "folders")),
       ]).catch(() => {});
       res.json({ success: true, message: "Message marked as unread" });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
   });
 });
@@ -570,12 +671,16 @@ export const deleteSmtpMessage = asyncHandler(async (req, res) => {
     try {
       const resolvedFolder = await resolveFolder(imap, sender, folder);
       await openFolder(imap, resolvedFolder);
-      await util.promisify(imap.addFlags).bind(imap)(parseInt(messageId), ["\\Deleted"]);
+      await util.promisify(imap.addFlags).bind(imap)(parseInt(messageId), [
+        "\\Deleted",
+      ]);
       await util.promisify(imap.expunge).bind(imap)();
       await deleteCachedData(generateCacheKey("smtp", mailboxId, "*"));
       res.json({ success: true, message: "Message deleted successfully" });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
   });
 });
@@ -601,15 +706,22 @@ export const moveSmtpMessage = asyncHandler(async (req, res) => {
       const resolvedSource = await resolveFolder(imap, sender, sourceFolder);
       const resolvedTarget = await resolveFolder(imap, sender, targetFolder);
       await openFolder(imap, resolvedSource);
-      await util.promisify(imap.move).bind(imap)(parseInt(messageId), resolvedTarget);
+      await util.promisify(imap.move).bind(imap)(
+        parseInt(messageId),
+        resolvedTarget,
+      );
       Promise.all([
         deleteCachedData(generateCacheKey("smtp", mailboxId, "messages", "*")),
-        deleteCachedData(generateCacheKey("smtp", mailboxId, "message", messageId, "*")),
+        deleteCachedData(
+          generateCacheKey("smtp", mailboxId, "message", messageId, "*"),
+        ),
         deleteCachedData(generateCacheKey("smtp", mailboxId, "folders")),
       ]).catch(() => {});
       res.json({ success: true, message: `Message moved to ${targetFolder}` });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
   });
 });
@@ -632,26 +744,36 @@ export const syncSmtpMailbox = asyncHandler(async (req, res) => {
     try {
       const resolvedFolder = await resolveFolder(imap, sender, folder);
       box = await openFolder(imap, resolvedFolder);
-    } catch (_) {
+    } catch (err) {
       box = null;
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
 
     const updateData = { lastInboxSyncAt: new Date() };
     if (folder.toUpperCase() === "SENT") updateData.lastSentSyncAt = new Date();
-    if (folder.toUpperCase() === "DRAFTS") updateData.lastDraftsSyncAt = new Date();
+    if (folder.toUpperCase() === "DRAFTS")
+      updateData.lastDraftsSyncAt = new Date();
     await sender.update(updateData);
 
     await Promise.all([
-      deleteCachedData(generateCacheKey("smtp", mailboxId, "messages", folder, "*")),
+      deleteCachedData(
+        generateCacheKey("smtp", mailboxId, "messages", folder, "*"),
+      ),
       deleteCachedData(generateCacheKey("smtp", mailboxId, "folders")),
     ]);
 
     res.json({
       success: true,
       message: `Mailbox synced successfully (${folder})`,
-      data: { syncedAt: new Date(), folder, totalMessages: box?.messages?.total || 0, unreadMessages: box?.messages?.unseen || 0 },
+      data: {
+        syncedAt: new Date(),
+        folder,
+        totalMessages: box?.messages?.total || 0,
+        unreadMessages: box?.messages?.unseen || 0,
+      },
     });
   });
 });
@@ -683,21 +805,40 @@ export const getSmtpStatus = asyncHandler(async (req, res) => {
         try {
           const resolved = await resolveFolder(imap, sender, folderName);
           const status = await util.promisify(imap.status).bind(imap)(resolved);
-          return { folder: folderName, total: status.messages?.total || 0, unread: status.messages?.unseen || 0, recent: status.messages?.recent || 0 };
-        } catch (_) {
+          return {
+            folder: folderName,
+            total: status.messages?.total || 0,
+            unread: status.messages?.unseen || 0,
+            recent: status.messages?.recent || 0,
+          };
+        } catch (err) {
           return { folder: folderName, total: 0, unread: 0, recent: 0 };
         }
       });
 
       const results = await Promise.all(statusPromises);
       const statuses = {};
-      results.forEach((r) => { statuses[r.folder] = { total: r.total, unread: r.unread, recent: r.recent }; });
+      results.forEach((r) => {
+        statuses[r.folder] = {
+          total: r.total,
+          unread: r.unread,
+          recent: r.recent,
+        };
+      });
 
-      const result = { email: sender.email, domain: sender.domain, isConnected: true, folders: statuses, lastSyncAt: sender.lastInboxSyncAt };
+      const result = {
+        email: sender.email,
+        domain: sender.domain,
+        isConnected: true,
+        folders: statuses,
+        lastSyncAt: sender.lastInboxSyncAt,
+      };
       await setCachedData(cacheKey, result, 60);
       res.json({ success: true, data: result });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
   });
 });
@@ -843,16 +984,25 @@ export const createSmtpDraft = asyncHandler(async (req, res) => {
       const emailRaw = emailLines.join("\r\n");
 
       await new Promise((resolve, reject) => {
-        imap.append(emailRaw, { mailbox: resolvedDrafts, flags: ["\\Draft"] }, (err) => {
-          if (err) reject(err); else resolve();
-        });
+        imap.append(
+          emailRaw,
+          { mailbox: resolvedDrafts, flags: ["\\Draft"] },
+          (err) => {
+            if (err) reject(err);
+            else resolve();
+          },
+        );
       });
 
       await sender.update({ lastUsedAt: new Date() });
-      await deleteCachedData(generateCacheKey("smtp", mailboxId, "messages", "DRAFTS", "*"));
+      await deleteCachedData(
+        generateCacheKey("smtp", mailboxId, "messages", "DRAFTS", "*"),
+      );
       res.json({ success: true, message: "Draft created successfully" });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
   });
 });
@@ -877,7 +1027,9 @@ export const updateSmtpDraft = asyncHandler(async (req, res) => {
       await openFolder(imap, resolvedDrafts);
 
       // Delete old draft
-      await util.promisify(imap.addFlags).bind(imap)(parseInt(messageId), ["\\Deleted"]);
+      await util.promisify(imap.addFlags).bind(imap)(parseInt(messageId), [
+        "\\Deleted",
+      ]);
       await util.promisify(imap.expunge).bind(imap)();
 
       const emailLines = [
@@ -894,19 +1046,30 @@ export const updateSmtpDraft = asyncHandler(async (req, res) => {
       const emailRaw = emailLines.join("\r\n");
 
       await new Promise((resolve, reject) => {
-        imap.append(emailRaw, { mailbox: resolvedDrafts, flags: ["\\Draft"] }, (err) => {
-          if (err) reject(err); else resolve();
-        });
+        imap.append(
+          emailRaw,
+          { mailbox: resolvedDrafts, flags: ["\\Draft"] },
+          (err) => {
+            if (err) reject(err);
+            else resolve();
+          },
+        );
       });
 
       await sender.update({ lastUsedAt: new Date() });
       await Promise.all([
-        deleteCachedData(generateCacheKey("smtp", mailboxId, "messages", "DRAFTS", "*")),
-        deleteCachedData(generateCacheKey("smtp", mailboxId, "message", messageId, "*")),
+        deleteCachedData(
+          generateCacheKey("smtp", mailboxId, "messages", "DRAFTS", "*"),
+        ),
+        deleteCachedData(
+          generateCacheKey("smtp", mailboxId, "message", messageId, "*"),
+        ),
       ]);
       res.json({ success: true, message: "Draft updated successfully" });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
   });
 });
@@ -928,16 +1091,24 @@ export const deleteSmtpDraft = asyncHandler(async (req, res) => {
     try {
       const resolvedDrafts = await resolveFolder(imap, sender, "DRAFTS");
       await openFolder(imap, resolvedDrafts);
-      await util.promisify(imap.addFlags).bind(imap)(parseInt(messageId), ["\\Deleted"]);
+      await util.promisify(imap.addFlags).bind(imap)(parseInt(messageId), [
+        "\\Deleted",
+      ]);
       await util.promisify(imap.expunge).bind(imap)();
       await sender.update({ lastUsedAt: new Date() });
       await Promise.all([
-        deleteCachedData(generateCacheKey("smtp", mailboxId, "messages", "DRAFTS", "*")),
-        deleteCachedData(generateCacheKey("smtp", mailboxId, "message", messageId, "*")),
+        deleteCachedData(
+          generateCacheKey("smtp", mailboxId, "messages", "DRAFTS", "*"),
+        ),
+        deleteCachedData(
+          generateCacheKey("smtp", mailboxId, "message", messageId, "*"),
+        ),
       ]);
       res.json({ success: true, message: "Draft deleted successfully" });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
   });
 });
@@ -962,11 +1133,15 @@ export const sendSmtpDraft = asyncHandler(async (req, res) => {
       const resolvedDrafts = await resolveFolder(imap, sender, "DRAFTS");
       await openFolder(imap, resolvedDrafts);
 
-      const rawMessages = await fetchMessages(imap, [parseInt(messageId)], { bodies: "", struct: true });
+      const rawMessages = await fetchMessages(imap, [parseInt(messageId)], {
+        bodies: "",
+        struct: true,
+      });
       if (rawMessages.length === 0) throw new AppError("Draft not found", 404);
 
       const parsedMessages = await parseMessagesInParallel(rawMessages);
-      if (parsedMessages.length === 0) throw new AppError("Draft not found", 404);
+      if (parsedMessages.length === 0)
+        throw new AppError("Draft not found", 404);
 
       const draft = parsedMessages[0];
 
@@ -986,17 +1161,23 @@ export const sendSmtpDraft = asyncHandler(async (req, res) => {
       });
 
       // Delete the draft after sending
-      await util.promisify(imap.addFlags).bind(imap)(parseInt(messageId), ["\\Deleted"]);
+      await util.promisify(imap.addFlags).bind(imap)(parseInt(messageId), [
+        "\\Deleted",
+      ]);
       await util.promisify(imap.expunge).bind(imap)();
 
       await sender.update({ lastUsedAt: new Date(), lastSentAt: new Date() });
       await Promise.all([
         deleteCachedData(generateCacheKey("smtp", mailboxId, "messages", "*")),
-        deleteCachedData(generateCacheKey("smtp", mailboxId, "message", messageId, "*")),
+        deleteCachedData(
+          generateCacheKey("smtp", mailboxId, "message", messageId, "*"),
+        ),
       ]);
       res.json({ success: true, message: "Draft sent successfully" });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
   });
 });
@@ -1020,18 +1201,31 @@ export const toggleSmtpFlag = asyncHandler(async (req, res) => {
       const resolvedFolder = await resolveFolder(imap, sender, folder);
       await openFolder(imap, resolvedFolder);
       if (flagged) {
-        await util.promisify(imap.addFlags).bind(imap)(parseInt(messageId), ["\\Flagged"]);
+        await util.promisify(imap.addFlags).bind(imap)(parseInt(messageId), [
+          "\\Flagged",
+        ]);
       } else {
-        await util.promisify(imap.delFlags).bind(imap)(parseInt(messageId), ["\\Flagged"]);
+        await util.promisify(imap.delFlags).bind(imap)(parseInt(messageId), [
+          "\\Flagged",
+        ]);
       }
       await sender.update({ lastUsedAt: new Date() });
       await Promise.all([
-        deleteCachedData(generateCacheKey("smtp", mailboxId, "messages", folder, "*")),
-        deleteCachedData(generateCacheKey("smtp", mailboxId, "message", messageId, folder)),
+        deleteCachedData(
+          generateCacheKey("smtp", mailboxId, "messages", folder, "*"),
+        ),
+        deleteCachedData(
+          generateCacheKey("smtp", mailboxId, "message", messageId, folder),
+        ),
       ]);
-      res.json({ success: true, message: flagged ? "Message flagged" : "Message unflagged" });
+      res.json({
+        success: true,
+        message: flagged ? "Message flagged" : "Message unflagged",
+      });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
   });
 });
@@ -1050,32 +1244,46 @@ export const getSmtpAttachments = asyncHandler(async (req, res) => {
   if (!sender) throw new AppError("SMTP mailbox not found", 404);
 
   return withRateLimit(mailboxId, "smtp", async () => {
-    const cacheKey = generateCacheKey("smtp", mailboxId, "attachments", messageId, folder);
+    const cacheKey = generateCacheKey(
+      "smtp",
+      mailboxId,
+      "attachments",
+      messageId,
+      folder,
+    );
     const cached = await getCachedData(cacheKey);
-    if (cached) return res.json({ success: true, data: cached, fromCache: true });
+    if (cached)
+      return res.json({ success: true, data: cached, fromCache: true });
 
     const imap = await createImapConnection(sender);
     try {
       const resolvedFolder = await resolveFolder(imap, sender, folder);
       await openFolder(imap, resolvedFolder);
-      const rawMessages = await fetchMessages(imap, [parseInt(messageId)], { bodies: "", struct: true });
-      if (rawMessages.length === 0) throw new AppError("Message not found", 404);
+      const rawMessages = await fetchMessages(imap, [parseInt(messageId)], {
+        bodies: "",
+        struct: true,
+      });
+      if (rawMessages.length === 0)
+        throw new AppError("Message not found", 404);
 
       const fullEmail = rawMessages[0].parts.map((p) => p.data).join("");
       const parsed = await simpleParser(fullEmail);
-      const attachments = parsed.attachments?.map((att) => ({
-        id: att.contentId || att.filename,
-        filename: att.filename,
-        contentType: att.contentType,
-        size: att.size,
-        contentId: att.contentId,
-        related: att.related,
-      })) || [];
+      const attachments =
+        parsed.attachments?.map((att) => ({
+          id: att.contentId || att.filename,
+          filename: att.filename,
+          contentType: att.contentType,
+          size: att.size,
+          contentId: att.contentId,
+          related: att.related,
+        })) || [];
 
-      await setCachedData(cacheKey, attachments, CACHE_TTL.SINGLE_MESSAGE);
+      await setCachedData(cacheKey, attachments, CACHEerrTTL.SINGLEerrMESSAGE);
       res.json({ success: true, data: attachments });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
   });
 });
@@ -1098,22 +1306,36 @@ export const downloadSmtpAttachment = asyncHandler(async (req, res) => {
     try {
       const resolvedFolder = await resolveFolder(imap, sender, folder);
       await openFolder(imap, resolvedFolder);
-      const rawMessages = await fetchMessages(imap, [parseInt(messageId)], { bodies: "", struct: true });
-      if (rawMessages.length === 0) throw new AppError("Message not found", 404);
+      const rawMessages = await fetchMessages(imap, [parseInt(messageId)], {
+        bodies: "",
+        struct: true,
+      });
+      if (rawMessages.length === 0)
+        throw new AppError("Message not found", 404);
 
       const fullEmail = rawMessages[0].parts.map((p) => p.data).join("");
       const parsed = await simpleParser(fullEmail);
       const attachment = parsed.attachments?.find(
-        (att) => att.contentId === attachmentId || att.filename === attachmentId,
+        (att) =>
+          att.contentId === attachmentId || att.filename === attachmentId,
       );
       if (!attachment) throw new AppError("Attachment not found", 404);
 
       res.setHeader("Content-Type", attachment.contentType);
-      res.setHeader("Content-Disposition", `attachment; filename="${attachment.filename}"`);
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${attachment.filename}"`,
+      );
       res.setHeader("Content-Length", attachment.size);
-      res.send(attachment.content instanceof Buffer ? attachment.content : Buffer.from(attachment.content));
+      res.send(
+        attachment.content instanceof Buffer
+          ? attachment.content
+          : Buffer.from(attachment.content),
+      );
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
   });
 });
@@ -1147,7 +1369,9 @@ export const batchSmtpOperations = asyncHandler(async (req, res) => {
           const uid = parseInt(messageId);
           switch (operation) {
             case "delete":
-              await util.promisify(imap.addFlags).bind(imap)(uid, ["\\Deleted"]);
+              await util.promisify(imap.addFlags).bind(imap)(uid, [
+                "\\Deleted",
+              ]);
               results.push({ messageId, status: "deleted" });
               break;
             case "mark-read":
@@ -1159,16 +1383,28 @@ export const batchSmtpOperations = asyncHandler(async (req, res) => {
               results.push({ messageId, status: "marked-unread" });
               break;
             case "flag":
-              await util.promisify(imap.addFlags).bind(imap)(uid, ["\\Flagged"]);
+              await util.promisify(imap.addFlags).bind(imap)(uid, [
+                "\\Flagged",
+              ]);
               results.push({ messageId, status: "flagged" });
               break;
             case "unflag":
-              await util.promisify(imap.delFlags).bind(imap)(uid, ["\\Flagged"]);
+              await util.promisify(imap.delFlags).bind(imap)(uid, [
+                "\\Flagged",
+              ]);
               results.push({ messageId, status: "unflagged" });
               break;
             case "move":
-              if (!targetFolder) throw new AppError("Target folder required for move operation", 400);
-              const resolvedTarget = await resolveFolder(imap, sender, targetFolder);
+              if (!targetFolder)
+                throw new AppError(
+                  "Target folder required for move operation",
+                  400,
+                );
+              const resolvedTarget = await resolveFolder(
+                imap,
+                sender,
+                targetFolder,
+              );
               await util.promisify(imap.move).bind(imap)(uid, resolvedTarget);
               results.push({ messageId, status: "moved", targetFolder });
               break;
@@ -1189,9 +1425,15 @@ export const batchSmtpOperations = asyncHandler(async (req, res) => {
         deleteCachedData(generateCacheKey("smtp", mailboxId, "messages", "*")),
         deleteCachedData(generateCacheKey("smtp", mailboxId, "folders")),
       ]);
-      res.json({ success: true, message: `Batch operation '${operation}' completed`, data: { results } });
+      res.json({
+        success: true,
+        message: `Batch operation '${operation}' completed`,
+        data: { results },
+      });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
   });
 });
@@ -1220,14 +1462,19 @@ export const copySmtpMessage = asyncHandler(async (req, res) => {
       const resolvedTarget = await resolveFolder(imap, sender, targetFolder);
       await openFolder(imap, resolvedSource);
 
-      const rawMessages = await fetchMessages(imap, [parseInt(messageId)], { bodies: "", struct: true });
-      if (rawMessages.length === 0) throw new AppError("Message not found", 404);
+      const rawMessages = await fetchMessages(imap, [parseInt(messageId)], {
+        bodies: "",
+        struct: true,
+      });
+      if (rawMessages.length === 0)
+        throw new AppError("Message not found", 404);
 
       const fullEmail = rawMessages[0].parts.map((p) => p.data).join("");
 
       await new Promise((resolve, reject) => {
         imap.append(fullEmail, { mailbox: resolvedTarget }, (err) => {
-          if (err) reject(err); else resolve();
+          if (err) reject(err);
+          else resolve();
         });
       });
 
@@ -1238,7 +1485,9 @@ export const copySmtpMessage = asyncHandler(async (req, res) => {
       ]);
       res.json({ success: true, message: `Message copied to ${targetFolder}` });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
   });
 });
@@ -1261,9 +1510,16 @@ export const searchSmtpMessages = asyncHandler(async (req, res) => {
   if (!sender) throw new AppError("SMTP mailbox not found", 404);
 
   return withRateLimit(mailboxId, "smtp", async () => {
-    const cacheKey = generateCacheKey("smtp", mailboxId, "search", folder, query);
+    const cacheKey = generateCacheKey(
+      "smtp",
+      mailboxId,
+      "search",
+      folder,
+      query,
+    );
     const cached = await getCachedData(cacheKey);
-    if (cached) return res.json({ success: true, data: cached, fromCache: true });
+    if (cached)
+      return res.json({ success: true, data: cached, fromCache: true });
 
     const imap = await createImapConnection(sender);
     try {
@@ -1294,7 +1550,9 @@ export const searchSmtpMessages = asyncHandler(async (req, res) => {
       await setCachedData(cacheKey, result, 60);
       res.json({ success: true, data: result });
     } finally {
-      try { imap.end(); } catch (_) {}
+      try {
+        imap.end();
+      } catch (err) {}
     }
   });
 });

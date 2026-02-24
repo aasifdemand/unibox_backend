@@ -1,5 +1,5 @@
 export const normalizeEmail = (email) => {
-  if (!email || typeof email !== 'string') return null;
+  if (!email || typeof email !== "string") return null;
   
   const trimmed = email.trim().toLowerCase();
   
@@ -10,7 +10,7 @@ export const normalizeEmail = (email) => {
   const [localPart, domain] = parts;
   
   // Check if domain is valid
-  if (!domain || domain.length < 1 || domain.includes(' ') || !domain.includes('.')) {
+  if (!domain || domain.length < 1 || domain.includes(" ") || !domain.includes(".")) {
     return null;
   }
   

@@ -12,7 +12,9 @@
     "sender": "node src/workers/email-sender.worker.js",
     "verifier": "node src/workers/email-verifier.worker.js",
     "replier": "node src/workers/reply-ingestion.worker.js",
-    "blacklist": "node src/workers/blacklist-monitoring.worker.js"
+    "blacklist": "node src/workers/blacklist-monitoring.worker.js",
+    "lint": "eslint . --max-warnings=0",
+     "lint:fix": "eslint . --fix"
   },
   "keywords": [],
   "author": "",
@@ -50,6 +52,9 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.0.2",
+    "globals": "^17.3.0",
     "sequelize-cli": "^6.6.3"
   }
 }

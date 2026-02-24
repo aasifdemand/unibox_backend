@@ -314,12 +314,12 @@ async function startWorker() {
             const appUrl = process.env.APP_URL || process.env.VITE_API_URL || "http://localhost:8080";
             const unsubUrl = `${appUrl}/api/v1/tracking/unsubscribe/${emailId}`;
             rawHeaders += `List-Unsubscribe: <${unsubUrl}>\r\n` +
-                          `List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n`;
+                          "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n";
           }
 
           const raw =
             rawHeaders +
-            `Content-Type: text/html; charset=UTF-8\r\n\r\n` +
+            "Content-Type: text/html; charset=UTF-8\r\n\r\n" +
             emailRecord.htmlBody;
 
           const encoded = Buffer.from(raw)
@@ -329,7 +329,7 @@ async function startWorker() {
             .replace(/=+$/, "");
 
           const res = await axios.post(
-            `https://gmail.googleapis.com/gmail/v1/users/me/messages/send`,
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
             { raw: encoded },
             {
               headers: {
@@ -365,7 +365,7 @@ async function startWorker() {
           }
 
           const res = await axios.post(
-            `https://graph.microsoft.com/v1.0/me/messages`,
+            "https://graph.microsoft.com/v1.0/me/messages",
             messagePayload,
             { headers: { Authorization: `Bearer ${token}` } },
           );

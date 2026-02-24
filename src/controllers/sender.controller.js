@@ -139,12 +139,12 @@ export const bulkUploadSenders = asyncHandler(async (req, res) => {
     data = xlsx.utils.sheet_to_json(sheet);
   } catch (parseError) {
     // Cleanup file if parsing fails
-    await fsPromises.unlink(filePath).catch(() => {});
+    await fsPromises.unlink(filePath).catch((err) => console.error("Unlink failed:", err));
     throw new AppError(`Failed to parse Excel file: ${parseError.message}`, 400);
   }
 
   if (!data || data.length === 0) {
-    await fsPromises.unlink(filePath).catch(() => {});
+    await fsPromises.unlink(filePath).catch((err) => console.error("Unlink failed:", err));
     throw new AppError("The uploaded sheet is empty", 400);
   }
 
@@ -319,7 +319,7 @@ export const bulkUploadSenders = asyncHandler(async (req, res) => {
         // Fetch them back to get IDs
         const createdSenders = await SmtpSender.findAll({
           where: { email: verifiedBatch.map(s => s.email), userId },
-          attributes: ['id']
+          attributes: ["id"]
         });
 
         createdSenders.forEach(s => {

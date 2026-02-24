@@ -260,7 +260,7 @@ async function ingestOutlookReplies(sender) {
   if (!token) return;
 
   const res = await axios.get(
-    `https://graph.microsoft.com/v1.0/me/messages?$top=50`,
+    "https://graph.microsoft.com/v1.0/me/messages?$top=50",
     {
       headers: { Authorization: `Bearer ${token}` },
     },
