@@ -258,8 +258,8 @@ async function startWorker() {
           // 🔍 DNS pre-send check — warn if SPF/DKIM/DMARC are missing
           checkSenderDns(domain).then((dnsResult) => {
             const issues = [];
-            if (!dnsResult.spf)   issues.push("SPF record missing");
-            if (!dnsResult.dkim)  issues.push("DKIM record missing (check aaPanel DKIM settings)");
+            if (!dnsResult.spf) issues.push("SPF record missing");
+            if (!dnsResult.dkim) issues.push("DKIM record missing (check aaPanel DKIM settings)");
             if (!dnsResult.dmarc) issues.push("DMARC record missing");
             if (issues.length) {
               log("WARN", "⚠️ Deliverability issues detected — emails may land in spam", {
@@ -268,7 +268,7 @@ async function startWorker() {
                 issues,
               });
             }
-          }).catch(() => {}); // non-blocking
+          }).catch(() => { }); // non-blocking
 
           try {
             const mailOptions = {
@@ -305,7 +305,7 @@ async function startWorker() {
         if (senderType === "gmail") {
           const token = await refreshGoogleToken(sender);
 
-          let rawHeaders = 
+          let rawHeaders =
             `From: ${sender.email}\r\n` +
             `To: ${emailRecord.recipientEmail}\r\n` +
             `Subject: ${emailRecord.subject}\r\n`;
@@ -314,7 +314,7 @@ async function startWorker() {
             const appUrl = process.env.APP_URL || process.env.VITE_API_URL || "http://localhost:8080";
             const unsubUrl = `${appUrl}/api/v1/tracking/unsubscribe/${emailId}`;
             rawHeaders += `List-Unsubscribe: <${unsubUrl}>\r\n` +
-                          "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n";
+              "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n";
           }
 
           const raw =
@@ -355,13 +355,18 @@ async function startWorker() {
             ],
           };
 
+          // 🚀 Microsoft Graph API requires custom headers to start with 'x-' or 'X-'
+          messagePayload.internetMessageHeaders = [
+            { name: "X-Unibox-Email-Id", value: emailId }
+          ];
+
           if (emailRecord.htmlBody && emailRecord.htmlBody.includes("/tracking/unsubscribe/")) {
             const appUrl = process.env.APP_URL || process.env.VITE_API_URL || "http://localhost:8080";
             const unsubUrl = `${appUrl}/api/v1/tracking/unsubscribe/${emailId}`;
-            messagePayload.internetMessageHeaders = [
-              { name: "List-Unsubscribe", value: `<${unsubUrl}>` },
-              { name: "List-Unsubscribe-Post", value: "List-Unsubscribe=One-Click" }
-            ];
+            messagePayload.internetMessageHeaders.push(
+              { name: "X-List-Unsubscribe", value: `<${unsubUrl}>` },
+              { name: "X-List-Unsubscribe-Post", value: "List-Unsubscribe=One-Click" }
+            );
           }
 
           const res = await axios.post(
@@ -407,20 +412,20 @@ async function startWorker() {
               where: { id: emailRecord.campaignId },
             }),
             CampaignSend.update(
-              { 
+              {
                 status: "sent",
-                sentAt: new Date() 
+                sentAt: new Date()
               },
               { where: { emailId: emailRecord.id } },
             ),
           ]);
         }
 
-        log("INFO", "✅ Email sent successfully", { 
-          emailId, 
-          recipient: emailRecord.recipientEmail, 
+        log("INFO", "✅ Email sent successfully", {
+          emailId,
+          recipient: emailRecord.recipientEmail,
           providerMessageId,
-          domain 
+          domain
         });
 
         channel.ack(msg);

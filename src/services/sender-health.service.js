@@ -1,9 +1,11 @@
 import { Op } from "sequelize";
 import dns from "dns/promises";
-import SenderHealth from "../models/sender-health.model.js";
-import SmtpSender from "../models/smtp-sender.model.js";
-import Email from "../models/email.model.js";
-import BounceEvent from "../models/bounce-event.model.js";
+import {
+  SenderHealth,
+  SmtpSender,
+  Email,
+  BounceEvent,
+} from "../models/index.js";
 
 class SenderHealthService {
   async evaluateSender(senderId) {
@@ -168,6 +170,7 @@ class SenderHealthService {
       include: [
         {
           model: Email,
+          as: "email",
           where: { senderId },
           required: true,
         },

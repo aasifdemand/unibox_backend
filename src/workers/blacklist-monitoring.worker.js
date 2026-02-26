@@ -1,6 +1,6 @@
 import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 initGlobalErrorHandlers();
-import SmtpSender from "../models/smtp-sender.model.js";
+import { SmtpSender } from "../models/index.js";
 import { senderHealthService } from "../services/sender-health.service.js";
 
 (async () => {
