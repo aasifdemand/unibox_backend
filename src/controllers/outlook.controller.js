@@ -80,11 +80,14 @@ const getOutlookClient = async (sender) => {
   return client;
 };
 
-// GET OUTLOOK MESSAGES - FIXED PAGINATION
-export const getOutlookMessages = asyncHandler(async (req, res) => {
+// GET OUTLOOK MESSAGES - INTERNAL CORE
+const getOutlookMessagesInternal = async (req, res, explicitFolderId = null) => {
   const { mailboxId } = req.params;
   const userId = req.user.id;
-  const { skipToken, top = 10, folderId = "inbox", search = "" } = req.query;
+  const { skipToken, top = 10, folderId: queryFolderId = "inbox", search = "" } = req.query;
+
+  // Prioritize explicitFolderId from specialized handlers
+  const folderId = explicitFolderId || queryFolderId || "inbox";
 
   const sender = await OutlookSender.findOne({
     where: { id: mailboxId, userId, isVerified: true },
@@ -104,12 +107,15 @@ export const getOutlookMessages = asyncHandler(async (req, res) => {
     // Ensure top is respected
     let pageSize = Math.min(parseInt(top) || 10, 100);
 
+    // Normalize folderId for consistent caching and mapping
+    const normalizedFolderId = folderId.toLowerCase();
+
     // Generate cache key
     const cacheKey = generateCacheKey(
       "outlook",
       mailboxId,
       "messages",
-      folderId,
+      normalizedFolderId,
       skipToken || "first",
       pageSize,
       search || "nosearch",
@@ -153,11 +159,11 @@ export const getOutlookMessages = asyncHandler(async (req, res) => {
     };
 
     const endpoint =
-      folderMap[folderId.toLowerCase()] ||
+      folderMap[normalizedFolderId] ||
       `/me/mailFolders/${folderId}/messages`;
 
     const params = {
-      $top: pageSize, // Use the parsed pageSize
+      $top: pageSize,
       $orderby: "receivedDateTime desc",
       $select:
         "id,subject,from,toRecipients,ccRecipients,bccRecipients,body,bodyPreview,conversationId,internetMessageId,receivedDateTime,isRead,parentFolderId,hasAttachments",
@@ -168,8 +174,12 @@ export const getOutlookMessages = asyncHandler(async (req, res) => {
       params.$search = `"${search}"`;
     }
 
-    if (skipToken) {
-      params.$skiptoken = skipToken;
+    if (skipToken && skipToken !== "first") {
+      if (!isNaN(skipToken)) {
+        params.$skip = skipToken;
+      } else {
+        params.$skiptoken = skipToken;
+      }
     }
 
     const response = await client.get(endpoint, { params });
@@ -177,13 +187,13 @@ export const getOutlookMessages = asyncHandler(async (req, res) => {
     let nextSkipToken = null;
     if (response.data["@odata.nextLink"]) {
       const url = new URL(response.data["@odata.nextLink"]);
-      nextSkipToken = url.searchParams.get("$skiptoken");
+      nextSkipToken = url.searchParams.get("$skiptoken") || url.searchParams.get("$skip");
     }
 
     const messages = (response.data.value || []).map((msg) => ({
       ...msg,
       folder: folderId,
-      folderType: mapOutlookFolderToType(folderId),
+      folderType: mapOutlookFolderToType(normalizedFolderId),
     }));
 
     const result = {
@@ -192,7 +202,7 @@ export const getOutlookMessages = asyncHandler(async (req, res) => {
       nextLink: response.data["@odata.nextLink"] || null,
       count: response.data["@odata.count"] || 0,
       folderId,
-      folderType: mapOutlookFolderToType(folderId),
+      folderType: mapOutlookFolderToType(normalizedFolderId),
       hasMore: !!nextSkipToken,
       top: pageSize,
     };
@@ -207,6 +217,11 @@ export const getOutlookMessages = asyncHandler(async (req, res) => {
 
     res.json({ success: true, data: result });
   });
+};
+
+// GET OUTLOOK MESSAGES (Public Handler)
+export const getOutlookMessages = asyncHandler(async (req, res) => {
+  return getOutlookMessagesInternal(req, res);
 });
 
 // =========================
@@ -658,8 +673,12 @@ export const searchOutlookMessages = asyncHandler(async (req, res) => {
       $count: "true",
     };
 
-    if (skipToken) {
-      params.$skiptoken = skipToken;
+    if (skipToken && skipToken !== "first") {
+      if (!isNaN(skipToken)) {
+        params.$skip = skipToken;
+      } else {
+        params.$skiptoken = skipToken;
+      }
     }
 
     const response = await client.get("/me/messages", { params });
@@ -667,7 +686,7 @@ export const searchOutlookMessages = asyncHandler(async (req, res) => {
     let nextSkipToken = null;
     if (response.data["@odata.nextLink"]) {
       const url = new URL(response.data["@odata.nextLink"]);
-      nextSkipToken = url.searchParams.get("$skiptoken");
+      nextSkipToken = url.searchParams.get("$skiptoken") || url.searchParams.get("$skip");
     }
 
     const result = {
@@ -812,49 +831,52 @@ const mapOutlookFolderToType = (folderId, folderName) => {
   const folderMap = {
     inbox: "inbox",
     sentitems: "sent",
+    sent: "sent",
     drafts: "drafts",
     deleteditems: "trash",
+    trash: "trash",
     junkemail: "spam",
+    junk: "spam",
+    spam: "spam",
     archive: "archive",
     outbox: "outbox",
   };
 
+  const id = folderId?.toLowerCase();
+  const name = folderName?.toLowerCase().replace(/\s+/g, "");
+
   return (
-    folderMap[folderId?.toLowerCase()] ||
-    folderMap[folderName?.toLowerCase().replace(/\s+/g, "")] ||
-    "custom"
+    folderMap[id] ||
+    folderMap[name] ||
+    (id?.includes("sent") || name?.includes("sent") ? "sent" :
+      id?.includes("trash") || id?.includes("deleted") || name?.includes("trash") || name?.includes("deleted") ? "trash" :
+        "custom")
   );
 };
 
 // Export all folder-specific functions
 export const getOutlookSentMessages = asyncHandler(async (req, res) => {
-  req.query.folderId = "sentitems";
-  return getOutlookMessages(req, res);
+  return getOutlookMessagesInternal(req, res, "sentitems");
 });
 
 export const getOutlookTrashMessages = asyncHandler(async (req, res) => {
-  req.query.folderId = "deleteditems";
-  return getOutlookMessages(req, res);
+  return getOutlookMessagesInternal(req, res, "deleteditems");
 });
 
 export const getOutlookSpamMessages = asyncHandler(async (req, res) => {
-  req.query.folderId = "junkemail";
-  return getOutlookMessages(req, res);
+  return getOutlookMessagesInternal(req, res, "junkemail");
 });
 
 export const getOutlookArchiveMessages = asyncHandler(async (req, res) => {
-  req.query.folderId = "archive";
-  return getOutlookMessages(req, res);
+  return getOutlookMessagesInternal(req, res, "archive");
 });
 
 export const getOutlookOutboxMessages = asyncHandler(async (req, res) => {
-  req.query.folderId = "outbox";
-  return getOutlookMessages(req, res);
+  return getOutlookMessagesInternal(req, res, "outbox");
 });
 
 export const getOutlookDrafts = asyncHandler(async (req, res) => {
-  req.query.folderId = "drafts";
-  return getOutlookMessages(req, res);
+  return getOutlookMessagesInternal(req, res, "drafts");
 });
 
 // =========================
@@ -1006,14 +1028,14 @@ export const replyToOutlookMessage = asyncHandler(async (req, res) => {
         },
         toRecipients: replyAll
           ? [
-              original.data.from,
-              ...(original.data.toRecipients || []),
-              ...(original.data.ccRecipients || []),
-            ].filter(
-              (r) =>
-                r.emailAddress.address.toLowerCase() !==
-                sender.email.toLowerCase(),
-            )
+            original.data.from,
+            ...(original.data.toRecipients || []),
+            ...(original.data.ccRecipients || []),
+          ].filter(
+            (r) =>
+              r.emailAddress.address.toLowerCase() !==
+              sender.email.toLowerCase(),
+          )
           : [original.data.from],
       },
       comment: html || body,
@@ -1143,20 +1165,20 @@ export const createOutlookDraft = asyncHandler(async (req, res) => {
     // Format recipients
     const toRecipients = to
       ? to.split(",").map((email) => ({
-          emailAddress: { address: email.trim() },
-        }))
+        emailAddress: { address: email.trim() },
+      }))
       : [];
 
     const ccRecipients = cc
       ? cc.split(",").map((email) => ({
-          emailAddress: { address: email.trim() },
-        }))
+        emailAddress: { address: email.trim() },
+      }))
       : [];
 
     const bccRecipients = bcc
       ? bcc.split(",").map((email) => ({
-          emailAddress: { address: email.trim() },
-        }))
+        emailAddress: { address: email.trim() },
+      }))
       : [];
 
     // Build draft
