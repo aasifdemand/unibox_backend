@@ -11,6 +11,7 @@ import SmtpSender from "../models/smtp-sender.model.js";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
 import ReplyEvent from "../models/reply-event.model.js";
 import Email from "../models/email.model.js";
+import CampaignStep from "../models/campaign-step.model.js";
 import { Op } from "sequelize";
 import sequelize from "../config/db.js";
 
@@ -235,12 +236,40 @@ export const createCampaign = asyncHandler(async (req, res) => {
     totalReplied: 0,
   });
 
+  /* =========================
+     MULTI-STEP SUPPORT
+  ========================= */
+  // Step 0 is always the main campaign content
+  await CampaignStep.create({
+    campaignId: campaign.id,
+    stepOrder: 0,
+    subject: campaign.subject,
+    htmlBody: campaign.htmlBody,
+    textBody: campaign.textBody,
+    delayMinutes: 0,
+    condition: "always",
+  });
+
+  // Create additional follow-up steps if provided
+  const { steps = [] } = req.body;
+  if (Array.isArray(steps) && steps.length > 0) {
+    const followUps = steps
+      .filter((s) => s.stepOrder > 0)
+      .map((s) => ({
+        ...s,
+        campaignId: campaign.id,
+      }));
+    if (followUps.length > 0) {
+      await CampaignStep.bulkCreate(followUps);
+    }
+  }
+
   // DO NOT create recipients here - they are created during activation
 
   res.status(201).json({
     success: true,
     data: campaign,
-    message: "Campaign created as draft. Activate it when ready to send.",
+    message: "Campaign created as draft with steps. Activate it when ready.",
   });
 });
 
@@ -295,6 +324,53 @@ export const updateCampaign = asyncHandler(async (req, res) => {
   if (unsubscribeLink !== undefined) updates.unsubscribeLink = unsubscribeLink;
 
   await campaign.update(updates);
+
+  /* =========================
+     MULTI-STEP UPDATE
+  ========================= */
+  const { steps } = req.body;
+  if (steps !== undefined && Array.isArray(steps)) {
+    // 1. Sync Step 0 with Campaign content (to ensure orchestrator has it)
+    await CampaignStep.upsert({
+      campaignId: campaign.id,
+      stepOrder: 0,
+      subject: campaign.subject,
+      htmlBody: campaign.htmlBody,
+      textBody: campaign.textBody,
+      delayMinutes: 0,
+      condition: "always",
+    });
+
+    // 2. Clear existing follow-ups and recreate (simpler than complex diffing)
+    await CampaignStep.destroy({
+      where: {
+        campaignId: campaign.id,
+        stepOrder: { [Op.gt]: 0 },
+      },
+    });
+
+    const followUps = steps
+      .filter((s) => s.stepOrder > 0)
+      .map((s) => ({
+        ...s,
+        campaignId: campaign.id,
+      }));
+
+    if (followUps.length > 0) {
+      await CampaignStep.bulkCreate(followUps);
+    }
+  } else {
+    // If steps not provided, still sync Step 0 in case content changed
+    await CampaignStep.upsert({
+      campaignId: campaign.id,
+      stepOrder: 0,
+      subject: campaign.subject,
+      htmlBody: campaign.htmlBody,
+      textBody: campaign.textBody,
+      delayMinutes: 0,
+      condition: "always",
+    });
+  }
 
   res.json({
     success: true,
@@ -487,10 +563,10 @@ export const getCampaignReplies = asyncHandler(async (req, res) => {
       // Remove the nested structure if needed
       email: replyJson.email
         ? {
-            id: replyJson.email.id,
-            subject: replyJson.email.subject,
-            sentAt: replyJson.email.sentAt,
-          }
+          id: replyJson.email.id,
+          subject: replyJson.email.subject,
+          sentAt: replyJson.email.sentAt,
+        }
         : null,
     };
   });

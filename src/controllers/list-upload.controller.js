@@ -627,6 +627,7 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
       "rawEmail",
       "normalizedEmail",
       "name",
+      "metadata",
       "failureReason",
       "createdAt",
     ],
@@ -657,6 +658,7 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
         "rawEmail",
         "normalizedEmail",
         "name",
+        "metadata",
         "failureReason",
         "createdAt",
       ],
@@ -671,10 +673,11 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
     status: record.status,
     email: record.normalizedEmail || record.rawEmail,
     name: record.name,
+    metadata: record.metadata || {},
     failureReason: record.failureReason,
     verificationStatus: record.GlobalEmailRegistry?.verificationStatus,
-    verifiedAt: record.GlobalEmailRegistry?.verifiedAt, // Changed from lastVerifiedAt
-    verificationReason: record.GlobalEmailRegistry?.verificationMeta, // Changed from reason
+    verifiedAt: record.GlobalEmailRegistry?.verifiedAt,
+    verificationReason: record.GlobalEmailRegistry?.verificationMeta,
     createdAt: record.createdAt,
   }));
 
@@ -684,6 +687,7 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
     status: record.status,
     email: record.normalizedEmail || record.rawEmail,
     name: record.name,
+    metadata: record.metadata || {},
     failureReason: record.failureReason,
     verificationStatus: record.GlobalEmailRegistry?.verificationStatus,
     verifiedAt: record.GlobalEmailRegistry?.verifiedAt,

@@ -1,5 +1,5 @@
-// controllers/gmail.controller.js
 import { google } from "googleapis";
+import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import GmailSender from "../models/gmail-sender.model.js";
 import { asyncHandler } from "../helpers/async-handler.js";
 import AppError from "../utils/app-error.js";
@@ -20,6 +20,18 @@ const CACHE_TTL = {
   DRAFTS: 900, // 15 minutes
   THREADS: 1200, // 20 minutes
   PROFILE: 3600, // 1 hour
+};
+
+// HELPER: Clean recipients (filter empty strings)
+const cleanRecipients = (arr) => {
+  if (!arr) return undefined;
+  if (Array.isArray(arr)) return arr.filter((email) => email && email.trim());
+  if (typeof arr === "string")
+    return arr
+      .split(",")
+      .map((e) => e.trim())
+      .filter((e) => e);
+  return arr;
 };
 
 // =========================
@@ -1123,7 +1135,7 @@ const mapGmailLabelToFolder = (labelId, labelName) => {
 export const sendGmailMessage = asyncHandler(async (req, res) => {
   const { mailboxId } = req.params;
   const userId = req.user.id;
-  const { to, cc, bcc, subject, body, html } = req.body;
+  const { to, cc, bcc, subject, body, html, attachments } = req.body;
 
   if (!to || !subject || (!body && !html)) {
     throw new AppError("To, subject, and message body are required", 400);
@@ -1138,25 +1150,27 @@ export const sendGmailMessage = asyncHandler(async (req, res) => {
     try {
       const gmail = await getGmailClient(sender);
 
-      // Build email content
-      const emailLines = [];
+      const mailOptions = {
+        from: `"${sender.name}" <${sender.email}>`,
+        to: cleanRecipients(to),
+        cc: cleanRecipients(cc),
+        bcc: cleanRecipients(bcc),
+        subject,
+        text: body,
+        html: html || body,
+        attachments: (attachments || []).map((att) => ({
+          filename: att.filename,
+          content: att.content,
+          encoding: "base64",
+          contentType: att.contentType,
+        })),
+      };
 
-      // Headers
-      emailLines.push(`To: ${to}`);
-      if (cc) emailLines.push(`Cc: ${cc}`);
-      if (bcc) emailLines.push(`Bcc: ${bcc}`);
-      emailLines.push(`Subject: ${subject}`);
-      emailLines.push("MIME-Version: 1.0");
-      emailLines.push(
-        `Content-Type: ${html ? "text/html" : "text/plain"}; charset="UTF-8"`,
-      );
-      emailLines.push("");
-      emailLines.push(html || body);
+      const mail = new MailComposer(mailOptions);
+      const message = await mail.compile().build();
 
-      const email = emailLines.join("\r\n");
-
-      // Encode email
-      const encodedEmail = Buffer.from(email)
+      // Encode email as base64url
+      const encodedEmail = message
         .toString("base64")
         .replace(/\+/g, "-")
         .replace(/\//g, "_")
@@ -1202,7 +1216,7 @@ export const sendGmailMessage = asyncHandler(async (req, res) => {
 export const replyToGmailMessage = asyncHandler(async (req, res) => {
   const { mailboxId, messageId } = req.params;
   const userId = req.user.id;
-  const { body, html, replyAll = false } = req.body;
+  const { body, html, replyAll = false, attachments } = req.body;
 
   if (!body && !html) {
     throw new AppError("Message body is required", 400);
@@ -1258,38 +1272,35 @@ export const replyToGmailMessage = asyncHandler(async (req, res) => {
         }
       }
 
-      // Build email content with proper threading
-      const emailLines = [];
-
-      // Headers
-      emailLines.push(`To: ${recipients.join(", ")}`);
-      if (replyAll && cc && !replyAll) {
-        emailLines.push(`Cc: ${cc}`);
-      }
-      emailLines.push(
-        `Subject: ${subject.startsWith("Re:") ? subject : `Re: ${subject}`}`,
-      );
-      emailLines.push(`In-Reply-To: ${messageIdHeader}`);
-      emailLines.push(
-        `References: ${references ? references + " " + messageIdHeader : messageIdHeader}`,
-      );
-      emailLines.push("MIME-Version: 1.0");
-      emailLines.push(
-        `Content-Type: ${html ? "text/html" : "text/plain"}; charset="UTF-8"`,
-      );
-      emailLines.push("");
-
       // Add original message quote
       const quote = html
         ? `<br><br><div class="gmail_quote">On ${new Date(parseInt(original.data.internalDate)).toLocaleString()}, ${from} wrote:<br><blockquote class="gmail_quote" style="margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex">${original.data.snippet}</blockquote></div>`
         : `\n\nOn ${new Date(parseInt(original.data.internalDate)).toLocaleString()}, ${from} wrote:\n> ${original.data.snippet.replace(/\n/g, "\n> ")}`;
 
-      emailLines.push(html || body + quote);
+      const mailOptions = {
+        from: `"${sender.name}" <${sender.email}>`,
+        to: cleanRecipients(recipients),
+        cc: replyAll && cc ? cleanRecipients(cc) : undefined,
+        subject: subject.startsWith("Re:") ? subject : `Re: ${subject}`,
+        inReplyTo: messageIdHeader,
+        references: references
+          ? references + " " + messageIdHeader
+          : messageIdHeader,
+        text: body ? body + quote : undefined,
+        html: html ? html + quote : undefined,
+        attachments: (attachments || []).map((att) => ({
+          filename: att.filename,
+          content: att.content,
+          encoding: "base64",
+          contentType: att.contentType,
+        })),
+      };
 
-      const email = emailLines.join("\r\n");
+      const mail = new MailComposer(mailOptions);
+      const message = await mail.compile().build();
 
-      // Encode email
-      const encodedEmail = Buffer.from(email)
+      // Encode email as base64url
+      const encodedEmail = message
         .toString("base64")
         .replace(/\+/g, "-")
         .replace(/\//g, "_")
@@ -1337,7 +1348,7 @@ export const replyToGmailMessage = asyncHandler(async (req, res) => {
 export const forwardGmailMessage = asyncHandler(async (req, res) => {
   const { mailboxId, messageId } = req.params;
   const userId = req.user.id;
-  const { to, body, html } = req.body;
+  const { to, body, html, attachments } = req.body;
 
   if (!to || (!body && !html)) {
     throw new AppError("Recipient and message body are required", 400);
@@ -1380,21 +1391,26 @@ export const forwardGmailMessage = asyncHandler(async (req, res) => {
            ${html}`
         : `\n\n-------- Forwarded message --------\nFrom: ${from}\nDate: ${date}\nSubject: ${subject}\nTo: ${to}\n\n${body || original.data.snippet}`;
 
-      // Build email
-      const emailLines = [];
-      emailLines.push(`To: ${to}`);
-      emailLines.push(`Subject: Fwd: ${subject}`);
-      emailLines.push("MIME-Version: 1.0");
-      emailLines.push(
-        `Content-Type: ${html ? "text/html" : "text/plain"}; charset="UTF-8"`,
-      );
-      emailLines.push("");
-      emailLines.push(html ? forwardedBody : forwardedBody);
+      // Build email using MailComposer
+      const mailOptions = {
+        from: `"${sender.name}" <${sender.email}>`,
+        to: cleanRecipients(to),
+        subject: subject.startsWith("Fwd:") ? subject : `Fwd: ${subject}`,
+        text: body ? forwardedBody : undefined,
+        html: html ? forwardedBody : undefined,
+        attachments: (attachments || []).map((att) => ({
+          filename: att.filename,
+          content: att.content,
+          encoding: "base64",
+          contentType: att.contentType,
+        })),
+      };
 
-      const email = emailLines.join("\r\n");
+      const mail = new MailComposer(mailOptions);
+      const message = await mail.compile().build();
 
       // Encode email
-      const encodedEmail = Buffer.from(email)
+      const encodedEmail = message
         .toString("base64")
         .replace(/\+/g, "-")
         .replace(/\//g, "_")
@@ -1439,7 +1455,7 @@ export const forwardGmailMessage = asyncHandler(async (req, res) => {
 export const createGmailDraft = asyncHandler(async (req, res) => {
   const { mailboxId } = req.params;
   const userId = req.user.id;
-  const { to, cc, bcc, subject, body, html } = req.body;
+  const { to, cc, bcc, subject, body, html, attachments } = req.body;
 
   const sender = await GmailSender.findOne({
     where: { id: mailboxId, userId, isVerified: true },
@@ -1450,24 +1466,28 @@ export const createGmailDraft = asyncHandler(async (req, res) => {
     try {
       const gmail = await getGmailClient(sender);
 
-      // Build email content
-      const emailLines = [];
+      // Build email content using MailComposer
+      const mailOptions = {
+        from: `"${sender.name}" <${sender.email}>`,
+        to: cleanRecipients(to),
+        cc: cleanRecipients(cc),
+        bcc: cleanRecipients(bcc),
+        subject,
+        text: body,
+        html: html || body || "",
+        attachments: (attachments || []).map((att) => ({
+          filename: att.filename,
+          content: att.content,
+          encoding: "base64",
+          contentType: att.contentType,
+        })),
+      };
 
-      if (to) emailLines.push(`To: ${to}`);
-      if (cc) emailLines.push(`Cc: ${cc}`);
-      if (bcc) emailLines.push(`Bcc: ${bcc}`);
-      if (subject) emailLines.push(`Subject: ${subject}`);
-      emailLines.push("MIME-Version: 1.0");
-      emailLines.push(
-        `Content-Type: ${html ? "text/html" : "text/plain"}; charset="UTF-8"`,
-      );
-      emailLines.push("");
-      emailLines.push(html || body || "");
-
-      const email = emailLines.join("\r\n");
+      const mail = new MailComposer(mailOptions);
+      const message = await mail.compile().build();
 
       // Encode email
-      const encodedEmail = Buffer.from(email)
+      const encodedEmail = message
         .toString("base64")
         .replace(/\+/g, "-")
         .replace(/\//g, "_")
@@ -1512,7 +1532,7 @@ export const createGmailDraft = asyncHandler(async (req, res) => {
 export const updateGmailDraft = asyncHandler(async (req, res) => {
   const { mailboxId, draftId } = req.params;
   const userId = req.user.id;
-  const { to, cc, bcc, subject, body, html } = req.body;
+  const { to, cc, bcc, subject, body, html, attachments } = req.body;
 
   const sender = await GmailSender.findOne({
     where: { id: mailboxId, userId, isVerified: true },
@@ -1523,24 +1543,28 @@ export const updateGmailDraft = asyncHandler(async (req, res) => {
     try {
       const gmail = await getGmailClient(sender);
 
-      // Build email content
-      const emailLines = [];
+      // Build email content using MailComposer
+      const mailOptions = {
+        from: `"${sender.name}" <${sender.email}>`,
+        to: cleanRecipients(to),
+        cc: cleanRecipients(cc),
+        bcc: cleanRecipients(bcc),
+        subject,
+        text: body,
+        html: html || body || "",
+        attachments: (attachments || []).map((att) => ({
+          filename: att.filename,
+          content: att.content,
+          encoding: "base64",
+          contentType: att.contentType,
+        })),
+      };
 
-      if (to) emailLines.push(`To: ${to}`);
-      if (cc) emailLines.push(`Cc: ${cc}`);
-      if (bcc) emailLines.push(`Bcc: ${bcc}`);
-      if (subject) emailLines.push(`Subject: ${subject}`);
-      emailLines.push("MIME-Version: 1.0");
-      emailLines.push(
-        `Content-Type: ${html ? "text/html" : "text/plain"}; charset="UTF-8"`,
-      );
-      emailLines.push("");
-      emailLines.push(html || body || "");
-
-      const email = emailLines.join("\r\n");
+      const mail = new MailComposer(mailOptions);
+      const message = await mail.compile().build();
 
       // Encode email
-      const encodedEmail = Buffer.from(email)
+      const encodedEmail = message
         .toString("base64")
         .replace(/\+/g, "-")
         .replace(/\//g, "_")

@@ -15,18 +15,58 @@ class SenderHealthService {
     const domain = sender.email.split("@")[1];
 
     const spf = await this.checkSPF(domain);
-    const dkim = await this.checkDKIM(domain, sender.dkimSelector);
+
+    // Discover DKIM selector if not provided
+    let dkimResult = { valid: false };
+    if (sender.dkimSelector) {
+      dkimResult = await this.checkDKIM(domain, sender.dkimSelector);
+    } else {
+      const discoveredDkim = await this.getDkimForDomain(domain);
+      if (discoveredDkim) {
+        dkimResult = { valid: true };
+        // Optionally update the sender record with the discovered selector for future use
+        if (sender.update) {
+          sender.update({ dkimSelector: discoveredDkim.selector }).catch(() => { });
+        }
+      }
+    }
+
     const dmarc = await this.checkDMARC(domain);
-    const ptr = await this.checkPTR(sender.sendingIp);
-    const blacklist = await this.checkBlacklist(sender.sendingIp);
+
+    // Discover sending IP if not provided
+    let ptrResult = { valid: false };
+    let sendingIp = sender.sendingIp;
+
+    if (!sendingIp) {
+      try {
+        const mxRecords = await dns.resolveMx(domain);
+        if (mxRecords && mxRecords.length > 0) {
+          // Sort by priority to try the primary MX first
+          mxRecords.sort((a, b) => a.priority - b.priority);
+          const primaryMx = mxRecords[0].exchange;
+          const aRecords = await dns.resolve4(primaryMx);
+          if (aRecords && aRecords.length > 0) {
+            sendingIp = aRecords[0];
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    if (sendingIp) {
+      ptrResult = await this.checkPTR(sendingIp);
+    }
+
+    const blacklist = await this.checkBlacklist(sendingIp);
 
     const behavior = await this.calculateBehavioralMetrics(senderId);
 
     const score = this.calculateReputationScore({
       spf,
-      dkim,
+      dkim: dkimResult,
       dmarc,
-      ptr,
+      ptr: ptrResult,
       blacklist,
       behavior,
     });
@@ -34,9 +74,9 @@ class SenderHealthService {
     await SenderHealth.upsert({
       senderId,
       spfValid: spf.valid,
-      dkimValid: dkim.valid,
+      dkimValid: dkimResult.valid,
       dmarcPolicy: dmarc.policy || "none",
-      ptrValid: ptr.valid,
+      ptrValid: ptrResult.valid,
       blacklisted: blacklist.blacklisted,
       reputationScore: score,
       bounceRate: behavior.bounceRate,
@@ -101,6 +141,12 @@ class SenderHealthService {
       "email",
       "s1",
       "s2",
+      "postal",
+      "mandrill",
+      "sendgrid",
+      "mailgun",
+      "m1",
+      "d1",
     ];
 
     for (const selector of commonSelectors) {

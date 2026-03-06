@@ -47,17 +47,24 @@ class MTADetectorCache {
     console.log(`🔍 [MTACache] Hard detection required for ${domain}`);
     const detected = await mtaDetector.detect(domain);
 
-    await EmailDomainProvider.upsert({
-      domain,
-      provider: detected.provider,
-      confidence: detected.confidence,
-      score: detected.score,
-      signals: detected.signals,
-      detectedAt: new Date(),
-      ttlExpiresAt: new Date(Date.now() + this.dbTTL),
-    });
+    // Only cache in Database if it's a known provider. 
+    // Transient DNS failures causing "unknown" shouldn't blacklist a domain for 24hrs.
+    if (detected.provider !== "unknown") {
+      await EmailDomainProvider.upsert({
+        domain,
+        provider: detected.provider,
+        confidence: detected.confidence,
+        score: detected.score,
+        signals: detected.signals,
+        detectedAt: new Date(),
+        ttlExpiresAt: new Date(Date.now() + this.dbTTL),
+      });
+      await this._storeAll(key, detected);
+    } else {
+      // For unknown, only cache locally briefly so we retry sooner
+      this._storeLocal(key, detected);
+    }
 
-    await this._storeAll(key, detected);
     return detected;
   }
 

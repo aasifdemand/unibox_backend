@@ -7,6 +7,8 @@ import GmailSender from "../models/gmail-sender.model.js";
 import OutlookSender from "../models/outlook-sender.model.js";
 import SmtpSender from "../models/smtp-sender.model.js";
 import SenderHealth from "../models/sender-health.model.js";
+import CampaignSend from "../models/campaign-send.model.js";
+import CampaignRecipient from "../models/campaign-recipient.model.js";
 
 import { getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
@@ -220,6 +222,40 @@ async function startWorker() {
         channel.ack(msg);
       } catch (err) {
         log("ERROR", "Routing failed", { error: err.message, stack: err.stack });
+
+        try {
+          const { emailId } = JSON.parse(msg.content.toString());
+          if (emailId) {
+            const emailRecord = await Email.findByPk(emailId);
+            if (emailRecord) {
+              await emailRecord.update({
+                status: "failed",
+                lastError: err.message,
+              });
+
+              await CampaignSend.update(
+                { status: "failed" },
+                { where: { emailId } }
+              );
+
+              // If block is severe, stop the recipient from continuing the sequence
+              if (
+                err.message.includes("Sender reputation critical") ||
+                err.message.includes("Sender not verified")
+              ) {
+                if (emailRecord.recipientId) {
+                  await CampaignRecipient.update(
+                    { status: "stopped", nextRunAt: null },
+                    { where: { id: emailRecord.recipientId } }
+                  );
+                }
+              }
+            }
+          }
+        } catch (dbErr) {
+          log("ERROR", "Failed to update db on routing error", { error: dbErr.message });
+        }
+
         channel.ack(msg);
       }
     });

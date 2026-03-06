@@ -114,6 +114,14 @@ import {
 
 const router = Router();
 
+// Debug middleware for SMTP routes
+router.use("/smtp/:mailboxId", (req, res, next) => {
+  if (req.method === "POST" || req.path.includes("sent")) {
+    console.log(`[SMTP Debug] Route access: ${req.method} ${req.path} for mailbox: ${req.params.mailboxId}`);
+  }
+  next();
+});
+
 // =========================
 // ALL ROUTES REQUIRE AUTH
 // =========================
@@ -295,6 +303,8 @@ router.post("/smtp/:mailboxId/messages/:messageId/copy", copySmtpMessage);
 
 // Compose
 router.post("/smtp/:mailboxId/send", sendSmtpMessage);
+router.post("/smtp/:mailboxId/messages/:messageId/reply", sendSmtpMessage); // Alias for now
+router.post("/smtp/:mailboxId/messages/:messageId/forward", sendSmtpMessage); // Alias for now
 
 // Draft operations
 router.post("/smtp/:mailboxId/drafts", createSmtpDraft);

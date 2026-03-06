@@ -379,7 +379,7 @@ async function fetchSmtpMessagesForFolder(req, res, folder) {
       };
 
       // Update last sync silently
-      sender.update({ lastInboxSyncAt: new Date() }).catch(() => {});
+      sender.update({ lastInboxSyncAt: new Date() }).catch(() => { });
 
       await setCachedData(cacheKey, result, CACHEerrTTL.MESSAGES);
       res.json({ success: true, data: result });
@@ -495,7 +495,7 @@ export const getSmtpFolders = asyncHandler(async (req, res) => {
         const order = { INBOX: 1, SENT: 2, DRAFTS: 3, TRASH: 4, SPAM: 5 };
         return (
           (order[a.name.toUpperCase()] || 6) -
-            (order[b.name.toUpperCase()] || 6) || a.name.localeCompare(b.name)
+          (order[b.name.toUpperCase()] || 6) || a.name.localeCompare(b.name)
         );
       });
 
@@ -604,12 +604,12 @@ export const markSmtpAsRead = asyncHandler(async (req, res) => {
           generateCacheKey("smtp", mailboxId, "message", messageId, folder),
         ),
         deleteCachedData(generateCacheKey("smtp", mailboxId, "folders")),
-      ]).catch(() => {});
+      ]).catch(() => { });
       res.json({ success: true, message: "Message marked as read" });
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
   });
 });
@@ -643,12 +643,12 @@ export const markSmtpAsUnread = asyncHandler(async (req, res) => {
           generateCacheKey("smtp", mailboxId, "message", messageId, folder),
         ),
         deleteCachedData(generateCacheKey("smtp", mailboxId, "folders")),
-      ]).catch(() => {});
+      ]).catch(() => { });
       res.json({ success: true, message: "Message marked as unread" });
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
   });
 });
@@ -680,7 +680,7 @@ export const deleteSmtpMessage = asyncHandler(async (req, res) => {
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
   });
 });
@@ -716,12 +716,12 @@ export const moveSmtpMessage = asyncHandler(async (req, res) => {
           generateCacheKey("smtp", mailboxId, "message", messageId, "*"),
         ),
         deleteCachedData(generateCacheKey("smtp", mailboxId, "folders")),
-      ]).catch(() => {});
+      ]).catch(() => { });
       res.json({ success: true, message: `Message moved to ${targetFolder}` });
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
   });
 });
@@ -749,7 +749,7 @@ export const syncSmtpMailbox = asyncHandler(async (req, res) => {
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
 
     const updateData = { lastInboxSyncAt: new Date() };
@@ -838,7 +838,7 @@ export const getSmtpStatus = asyncHandler(async (req, res) => {
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
   });
 });
@@ -1002,7 +1002,7 @@ export const createSmtpDraft = asyncHandler(async (req, res) => {
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
   });
 });
@@ -1069,7 +1069,7 @@ export const updateSmtpDraft = asyncHandler(async (req, res) => {
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
   });
 });
@@ -1108,7 +1108,7 @@ export const deleteSmtpDraft = asyncHandler(async (req, res) => {
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
   });
 });
@@ -1177,7 +1177,7 @@ export const sendSmtpDraft = asyncHandler(async (req, res) => {
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
   });
 });
@@ -1225,7 +1225,7 @@ export const toggleSmtpFlag = asyncHandler(async (req, res) => {
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
   });
 });
@@ -1283,7 +1283,7 @@ export const getSmtpAttachments = asyncHandler(async (req, res) => {
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
   });
 });
@@ -1335,7 +1335,7 @@ export const downloadSmtpAttachment = asyncHandler(async (req, res) => {
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
   });
 });
@@ -1433,7 +1433,7 @@ export const batchSmtpOperations = asyncHandler(async (req, res) => {
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
   });
 });
@@ -1487,7 +1487,7 @@ export const copySmtpMessage = asyncHandler(async (req, res) => {
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
   });
 });
@@ -1552,7 +1552,7 @@ export const searchSmtpMessages = asyncHandler(async (req, res) => {
     } finally {
       try {
         imap.end();
-      } catch (err) {}
+      } catch (err) { }
     }
   });
 });

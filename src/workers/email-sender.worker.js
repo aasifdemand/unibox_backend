@@ -3,6 +3,7 @@ import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 initGlobalErrorHandlers();
 import Redis from "ioredis";
 import nodemailer from "nodemailer";
+import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import { randomUUID } from "crypto";
 import axios from "axios";
 import dns from "dns/promises";
@@ -23,6 +24,11 @@ import { getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 import { refreshGoogleToken } from "../utils/refresh-google-token.js";
 import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
+import {
+  createImapConnection,
+  resolveFolder,
+  appendToFolder,
+} from "../utils/imap-helper.js";
 
 const redis = new Redis(process.env.REDIS_URL);
 
@@ -289,6 +295,37 @@ async function startWorker() {
             }
 
             await transporter.sendMail(mailOptions);
+
+            // 📤 APPEND TO SENT FOLDER (SMTP Manual persistence)
+            try {
+              log("DEBUG", "📥 Appending automated SMTP email to Sent folder", { senderId: sender.id });
+              const composer = new MailComposer(mailOptions);
+              const messageBuffer = await composer.compile().build();
+
+              let imapForAppend;
+              try {
+                imapForAppend = await createImapConnection(sender);
+                const resolvedSent = await resolveFolder(imapForAppend, sender, "SENT");
+                await appendToFolder(imapForAppend, resolvedSent, messageBuffer);
+                log("INFO", "✅ Automated SMTP email appended to Sent folder", { senderId: sender.id, folder: resolvedSent });
+
+                // 🧹 CLEAR CACHE so UI updates
+                const cachePattern = `mailbox:smtp:${sender.id}:messages:*`;
+                const keys = await redis.keys(cachePattern);
+                if (keys.length > 0) await redis.del(keys);
+              } catch (imapErr) {
+                log("ERROR", "❌ Failed to append automated SMTP email to Sent folder", {
+                  senderId: sender.id,
+                  error: imapErr.message
+                });
+              } finally {
+                if (imapForAppend) {
+                  try { imapForAppend.end(); } catch (e) { }
+                }
+              }
+            } catch (composerErr) {
+              log("ERROR", "❌ Failed to compose MIME for IMAP append", { error: composerErr.message });
+            }
           } catch (smtpErr) {
             // Evict cached transporter on auth/connection errors so next send gets a fresh one
             if (

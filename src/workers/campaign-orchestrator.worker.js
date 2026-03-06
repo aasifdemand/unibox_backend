@@ -3,6 +3,7 @@ import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 initGlobalErrorHandlers();
 
 import Campaign from "../models/campaign.model.js";
+import Sender from "../models/sender.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
 import CampaignStep from "../models/campaign-step.model.js";
 import CampaignSend from "../models/campaign-send.model.js";
@@ -30,16 +31,16 @@ const log = (level, message, meta = {}) =>
   );
 
 async function ensureStepZero(campaign) {
-  // Use findOrCreate to prevent unique constraint race conditions when multiple workers process same campaign
-  const [step] = await CampaignStep.findOrCreate({
-    where: { campaignId: campaign.id, stepOrder: 0 },
-    defaults: {
-      subject: campaign.subject || "No Subject",
-      htmlBody: campaign.htmlBody || "<p></p>",
-      textBody: campaign.textBody || "",
-      delayMinutes: 0,
-      condition: "always",
-    },
+  // Use upsert to ensure results are always in sync with Campaign main content
+  // This fix ensures that if a user edits the campaign in the dashboard, Step 0 used by orchestrator is updated.
+  const [step] = await CampaignStep.upsert({
+    campaignId: campaign.id,
+    stepOrder: 0,
+    subject: campaign.subject || "No Subject",
+    htmlBody: campaign.htmlBody || "<p></p>",
+    textBody: campaign.textBody || "",
+    delayMinutes: 0,
+    condition: "always",
   });
 
   return step;
@@ -74,7 +75,9 @@ async function startWorker() {
       const { campaignId, recipientId } = JSON.parse(msg.content.toString());
 
       try {
-        const campaign = await Campaign.findByPk(campaignId);
+        const campaign = await Campaign.findByPk(campaignId, {
+          include: [{ model: Sender }]
+        });
         const recipient = await CampaignRecipient.findByPk(recipientId);
 
         /* =========================
@@ -177,6 +180,7 @@ async function startWorker() {
           last_name: lastName,
           firstName: firstName, // Common alternative
           lastName: lastName,   // Common alternative
+          sender_name: campaign.Sender?.name || '',
           ...recipient.metadata,
         };
 
@@ -236,7 +240,7 @@ async function startWorker() {
             lastSentAt: new Date(),
             nextRunAt: null,
           });
-          
+
           log("INFO", "🏁 Recipient finished sequence", {
             campaignId,
             recipientId,
