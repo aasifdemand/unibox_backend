@@ -40,7 +40,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
    Does NOT block delivery — only logs issues.
 ========================= */
 
-const DKIM_SELECTORS_TO_PROBE = ["default", "mail", "dkim", "smtp", "k1", "selector1", "selector2"];
+const DKIM_SELECTORS_TO_PROBE = [
+  "default",
+  "mail",
+  "dkim",
+  "smtp",
+  "k1",
+  "selector1",
+  "selector2",
+];
 const _dnsCache = new Map(); // domain → { spf, dkim, dmarc, ts }
 const DNS_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
@@ -53,8 +61,12 @@ async function checkSenderDns(domain) {
   // SPF
   try {
     const txtRecords = await dns.resolveTxt(domain);
-    result.spf = txtRecords.flat().some((r) => r.toLowerCase().startsWith("v=spf1"));
-  } catch { /* no SPF found */ }
+    result.spf = txtRecords
+      .flat()
+      .some((r) => r.toLowerCase().startsWith("v=spf1"));
+  } catch {
+    /* no SPF found */
+  }
 
   // DKIM — probe common selectors
   for (const sel of DKIM_SELECTORS_TO_PROBE) {
@@ -65,14 +77,22 @@ async function checkSenderDns(domain) {
         result.dkimSelector = sel;
         break;
       }
-    } catch { /* selector not found */ }
+    } catch {
+      /* selector not found */
+    }
   }
 
   // DMARC
   try {
     const dmarcRecords = await dns.resolveTxt(`_dmarc.${domain}`);
-    result.dmarc = dmarcRecords.flat().join("").toLowerCase().startsWith("v=dmarc1");
-  } catch { /* no DMARC found */ }
+    result.dmarc = dmarcRecords
+      .flat()
+      .join("")
+      .toLowerCase()
+      .startsWith("v=dmarc1");
+  } catch {
+    /* no DMARC found */
+  }
 
   result.ts = Date.now();
   _dnsCache.set(domain, result);
@@ -192,7 +212,11 @@ async function startWorker() {
           return channel.ack(msg);
         }
 
-        log("DEBUG", "🚀 Processing email for delivery", { emailId, recipient: emailRecord.recipientEmail, senderType });
+        log("DEBUG", "🚀 Processing email for delivery", {
+          emailId,
+          recipient: emailRecord.recipientEmail,
+          senderType,
+        });
 
         /* =========================
            LOAD SENDER
@@ -207,7 +231,8 @@ async function startWorker() {
         if (senderType === "outlook")
           sender = await OutlookSender.findByPk(emailRecord.senderId);
 
-        if (!sender || !sender.isVerified) throw new Error("Sender not verified");
+        if (!sender || !sender.isVerified)
+          throw new Error("Sender not verified");
 
         /* =========================
            REPUTATION BLOCK
@@ -262,19 +287,28 @@ async function startWorker() {
           const transporter = getOrCreateTransporter(sender);
 
           // 🔍 DNS pre-send check — warn if SPF/DKIM/DMARC are missing
-          checkSenderDns(domain).then((dnsResult) => {
-            const issues = [];
-            if (!dnsResult.spf) issues.push("SPF record missing");
-            if (!dnsResult.dkim) issues.push("DKIM record missing (check aaPanel DKIM settings)");
-            if (!dnsResult.dmarc) issues.push("DMARC record missing");
-            if (issues.length) {
-              log("WARN", "⚠️ Deliverability issues detected — emails may land in spam", {
-                domain,
-                senderId: sender.id,
-                issues,
-              });
-            }
-          }).catch(() => { }); // non-blocking
+          checkSenderDns(domain)
+            .then((dnsResult) => {
+              const issues = [];
+              if (!dnsResult.spf) issues.push("SPF record missing");
+              if (!dnsResult.dkim)
+                issues.push(
+                  "DKIM record missing (check aaPanel DKIM settings)",
+                );
+              if (!dnsResult.dmarc) issues.push("DMARC record missing");
+              if (issues.length) {
+                log(
+                  "WARN",
+                  "⚠️ Deliverability issues detected — emails may land in spam",
+                  {
+                    domain,
+                    senderId: sender.id,
+                    issues,
+                  },
+                );
+              }
+            })
+            .catch(() => { }); // non-blocking
 
           try {
             const mailOptions = {
@@ -285,12 +319,18 @@ async function startWorker() {
               messageId,
             };
 
-            if (emailRecord.htmlBody && emailRecord.htmlBody.includes("/tracking/unsubscribe/")) {
-              const appUrl = process.env.APP_URL || process.env.VITE_API_URL || "http://localhost:8080";
+            if (
+              emailRecord.htmlBody &&
+              emailRecord.htmlBody.includes("/tracking/unsubscribe/")
+            ) {
+              const appUrl =
+                process.env.APP_URL ||
+                process.env.VITE_API_URL ||
+                "http://localhost:8080";
               const unsubUrl = `${appUrl}/api/v1/tracking/unsubscribe/${emailId}`;
               mailOptions.headers = {
                 "List-Unsubscribe": `<${unsubUrl}>`,
-                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"
+                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
               };
             }
 
@@ -298,33 +338,56 @@ async function startWorker() {
 
             // 📤 APPEND TO SENT FOLDER (SMTP Manual persistence)
             try {
-              log("DEBUG", "📥 Appending automated SMTP email to Sent folder", { senderId: sender.id });
+              log("DEBUG", "📥 Appending automated SMTP email to Sent folder", {
+                senderId: sender.id,
+              });
               const composer = new MailComposer(mailOptions);
               const messageBuffer = await composer.compile().build();
 
               let imapForAppend;
               try {
                 imapForAppend = await createImapConnection(sender);
-                const resolvedSent = await resolveFolder(imapForAppend, sender, "SENT");
-                await appendToFolder(imapForAppend, resolvedSent, messageBuffer);
-                log("INFO", "✅ Automated SMTP email appended to Sent folder", { senderId: sender.id, folder: resolvedSent });
+                const resolvedSent = await resolveFolder(
+                  imapForAppend,
+                  sender,
+                  "SENT",
+                );
+                await appendToFolder(
+                  imapForAppend,
+                  resolvedSent,
+                  messageBuffer,
+                );
+                log("INFO", "✅ Automated SMTP email appended to Sent folder", {
+                  senderId: sender.id,
+                  folder: resolvedSent,
+                });
 
                 // 🧹 CLEAR CACHE so UI updates
                 const cachePattern = `mailbox:smtp:${sender.id}:messages:*`;
                 const keys = await redis.keys(cachePattern);
                 if (keys.length > 0) await redis.del(keys);
               } catch (imapErr) {
-                log("ERROR", "❌ Failed to append automated SMTP email to Sent folder", {
-                  senderId: sender.id,
-                  error: imapErr.message
-                });
+                log(
+                  "ERROR",
+                  "❌ Failed to append automated SMTP email to Sent folder",
+                  {
+                    senderId: sender.id,
+                    error: imapErr.message,
+                  },
+                );
               } finally {
                 if (imapForAppend) {
-                  try { imapForAppend.end(); } catch (e) { }
+                  try {
+                    imapForAppend.end();
+                  } catch (e) {
+                    console.log(e);
+                  }
                 }
               }
             } catch (composerErr) {
-              log("ERROR", "❌ Failed to compose MIME for IMAP append", { error: composerErr.message });
+              log("ERROR", "❌ Failed to compose MIME for IMAP append", {
+                error: composerErr.message,
+              });
             }
           } catch (smtpErr) {
             // Evict cached transporter on auth/connection errors so next send gets a fresh one
@@ -347,10 +410,17 @@ async function startWorker() {
             `To: ${emailRecord.recipientEmail}\r\n` +
             `Subject: ${emailRecord.subject}\r\n`;
 
-          if (emailRecord.htmlBody && emailRecord.htmlBody.includes("/tracking/unsubscribe/")) {
-            const appUrl = process.env.APP_URL || process.env.VITE_API_URL || "http://localhost:8080";
+          if (
+            emailRecord.htmlBody &&
+            emailRecord.htmlBody.includes("/tracking/unsubscribe/")
+          ) {
+            const appUrl =
+              process.env.APP_URL ||
+              process.env.VITE_API_URL ||
+              "http://localhost:8080";
             const unsubUrl = `${appUrl}/api/v1/tracking/unsubscribe/${emailId}`;
-            rawHeaders += `List-Unsubscribe: <${unsubUrl}>\r\n` +
+            rawHeaders +=
+              `List-Unsubscribe: <${unsubUrl}>\r\n` +
               "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n";
           }
 
@@ -394,15 +464,24 @@ async function startWorker() {
 
           // 🚀 Microsoft Graph API requires custom headers to start with 'x-' or 'X-'
           messagePayload.internetMessageHeaders = [
-            { name: "X-Unibox-Email-Id", value: emailId }
+            { name: "X-Unibox-Email-Id", value: emailId },
           ];
 
-          if (emailRecord.htmlBody && emailRecord.htmlBody.includes("/tracking/unsubscribe/")) {
-            const appUrl = process.env.APP_URL || process.env.VITE_API_URL || "http://localhost:8080";
+          if (
+            emailRecord.htmlBody &&
+            emailRecord.htmlBody.includes("/tracking/unsubscribe/")
+          ) {
+            const appUrl =
+              process.env.APP_URL ||
+              process.env.VITE_API_URL ||
+              "http://localhost:8080";
             const unsubUrl = `${appUrl}/api/v1/tracking/unsubscribe/${emailId}`;
             messagePayload.internetMessageHeaders.push(
               { name: "X-List-Unsubscribe", value: `<${unsubUrl}>` },
-              { name: "X-List-Unsubscribe-Post", value: "List-Unsubscribe=One-Click" }
+              {
+                name: "X-List-Unsubscribe-Post",
+                value: "List-Unsubscribe=One-Click",
+              },
             );
           }
 
@@ -444,25 +523,34 @@ async function startWorker() {
 
         // 📊 UPDATE CAMPAIGN STATS
         if (emailRecord.campaignId) {
-          await Promise.all([
-            Campaign.increment("totalSent", {
-              where: { id: emailRecord.campaignId },
-            }),
+          const statsUpdates = [
             CampaignSend.update(
               {
                 status: "sent",
-                sentAt: new Date()
+                sentAt: new Date(),
               },
               { where: { emailId: emailRecord.id } },
             ),
-          ]);
+          ];
+
+          // Only increment totalSent for Step 0 (the initial outreach)
+          // This ensures totalSent represents unique recipients reached.
+          if (emailRecord.metadata?.step === 0) {
+            statsUpdates.push(
+              Campaign.increment("totalSent", {
+                where: { id: emailRecord.campaignId },
+              })
+            );
+          }
+
+          await Promise.all(statsUpdates);
         }
 
         log("INFO", "✅ Email sent successfully", {
           emailId,
           recipient: emailRecord.recipientEmail,
           providerMessageId,
-          domain
+          domain,
         });
 
         channel.ack(msg);
@@ -506,7 +594,6 @@ async function startWorker() {
       log("WARN", "Channel closed, restarting in 5s...");
       setTimeout(startWorker, 5000);
     });
-
   } catch (err) {
     log("ERROR", "Worker failed to start", { error: err.message });
     setTimeout(startWorker, 5000);

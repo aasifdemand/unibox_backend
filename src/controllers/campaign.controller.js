@@ -141,6 +141,12 @@ export const getCampaign = asyncHandler(async (req, res) => {
         limit: 50,
         required: false, // Make it optional
       },
+      {
+        model: CampaignStep,
+        as: "CampaignSteps",
+        separate: true,
+        order: [["stepOrder", "ASC"]],
+      },
     ],
   });
 
@@ -264,11 +270,24 @@ export const createCampaign = asyncHandler(async (req, res) => {
     }
   }
 
+  // Reload campaign with steps to ensure consistent response
+  const fullCampaign = await Campaign.findOne({
+    where: { id: campaign.id },
+    include: [
+      {
+        model: CampaignStep,
+        as: "CampaignSteps",
+        separate: true,
+        order: [["stepOrder", "ASC"]],
+      },
+    ],
+  });
+
   // DO NOT create recipients here - they are created during activation
 
   res.status(201).json({
     success: true,
-    data: campaign,
+    data: fullCampaign,
     message: "Campaign created as draft with steps. Activate it when ready.",
   });
 });
@@ -372,9 +391,22 @@ export const updateCampaign = asyncHandler(async (req, res) => {
     });
   }
 
+  // Reload campaign with steps to ensure consistent response
+  const fullCampaign = await Campaign.findOne({
+    where: { id: campaign.id },
+    include: [
+      {
+        model: CampaignStep,
+        as: "CampaignSteps",
+        separate: true,
+        order: [["stepOrder", "ASC"]],
+      },
+    ],
+  });
+
   res.json({
     success: true,
-    data: campaign,
+    data: fullCampaign,
     message: "Campaign updated successfully",
   });
 });

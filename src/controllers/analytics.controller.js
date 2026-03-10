@@ -452,9 +452,9 @@ export const getRecentReplies = asyncHandler(async (req, res) => {
     from: reply.replyFrom,
     subject: reply.subject,
     receivedAt: reply.receivedAt,
-    campaignId: reply.Email?.Campaign?.id,
-    campaignName: reply.Email?.Campaign?.name,
-    recipientEmail: reply.Email?.recipientEmail,
+    campaignId: reply.email?.Campaign?.id,
+    campaignName: reply.email?.Campaign?.name,
+    recipientEmail: reply.email?.recipientEmail,
   }));
 
   res.json({

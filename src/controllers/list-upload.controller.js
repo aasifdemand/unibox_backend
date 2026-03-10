@@ -10,13 +10,9 @@ import GlobalEmailRegistry from "../models/global-email-registry.model.js";
 import { Op, fn, literal } from "sequelize";
 import { asyncHandler } from "../helpers/async-handler.js";
 import sequelize from "../config/db.js";
-import {
-  normalizeEmail,
-  extractDomain,
-  isValidEmail,
-  getEmailProvider,
-} from "../utils/email-processor.js";
+import { extractDomain, getEmailProvider, isValidEmail, normalizeEmail } from "../utils/email-processor.js";
 import { enqueueEmailVerification } from "../helpers/enqueue-email-verifier.js";
+import { emitToUser } from "../utils/event-broadcaster.js";
 
 // Ensure uploads directory exists
 const ensureUploadsDir = async () => {
@@ -27,6 +23,19 @@ const ensureUploadsDir = async () => {
     await fsPromises.mkdir(uploadsDir, { recursive: true });
   }
   return uploadsDir;
+};
+
+const slugify = (text) => {
+  if (!text) return "";
+  return text
+    .toString()
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "_") // Replace spaces with _
+    .replace(/[^\w-]+/g, "") // Remove all non-word chars
+    .replace(/--+/g, "-") // Replace multiple - with single -
+    .replace(/^-+/, "") // Trim - from start of text
+    .replace(/-+$/, ""); // Trim - from end of text
 };
 
 export const uploadList = async (req, res) => {
@@ -153,10 +162,7 @@ const parseXLSX = (filePath) => {
       const normalizedRecord = {};
       Object.keys(record).forEach((key) => {
         if (record[key] !== undefined && record[key] !== null) {
-          const normalizedKey = key
-            .toString()
-            .toLowerCase()
-            .replace(/\s+/g, "");
+          const normalizedKey = slugify(key);
           normalizedRecord[normalizedKey] = record[key];
         }
       });
@@ -365,9 +371,13 @@ const processRecords = async (batch, records) => {
   const batchRecords = [];
   const normalizedToRaw = new Map();
   const validRecordsData = [];
+  const allHeaders = new Set();
 
   // Step 1: Pre-process and validate
   for (const record of records) {
+    // Collect all headers
+    Object.keys(record).forEach(key => allHeaders.add(key));
+
     try {
       const emailValue = findEmailField(record);
       if (!emailValue || !isValidEmail(emailValue)) continue;
@@ -380,12 +390,12 @@ const processRecords = async (batch, records) => {
 
       const name = findNameField(record);
 
-      // Clean metadata
-      const metadata = { ...record };
-      Object.keys(metadata).forEach((key) => {
-        const lowerKey = key.toLowerCase();
-        if (lowerKey.includes("email") || lowerKey.includes("name")) {
-          delete metadata[key];
+      // Clean and slugify metadata
+      const metadata = {};
+      Object.keys(record).forEach((key) => {
+        const slug = slugify(key);
+        if (!slug.includes("email") && !slug.includes("name")) {
+          metadata[slug] = record[key];
         }
       });
 
@@ -485,10 +495,22 @@ const processRecords = async (batch, records) => {
     validRecords: validCount,
     duplicateRecords: duplicateCount,
     failedRecords: failedCount,
+    mapping: Array.from(allHeaders).reduce((acc, header) => {
+      const slug = slugify(header);
+      acc[slug] = header;
+      return acc;
+    }, {}),
     processedAt: new Date(),
   });
 
   console.log(`✅ Processing complete for batch ${batch.id}`);
+
+  emitToUser(batch.userId, "notification", {
+    type: "success",
+    category: "audience",
+    title: "Bulk Import Successful",
+    message: `${validCount} valid leads were successfully imported from "${batch.originalFilename}".`,
+  });
 
   // Clean up
   if (batch.storagePath && fs.existsSync(batch.storagePath)) {
@@ -739,9 +761,9 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
         status: batch.status,
         totalRecords: batch.totalRecords,
         validRecords: batch.validRecords,
-        duplicateRecords: batch.duplicateRecords,
         failedRecords: batch.failedRecords,
         checksum: batch.checksum,
+        mapping: batch.mapping || {},
         errorReason: batch.errorReason,
         createdAt: batch.createdAt,
         updatedAt: batch.updatedAt,
@@ -955,4 +977,117 @@ export const exportBatch = asyncHandler(async (req, res) => {
     `attachment; filename=batch-${batchId}.${extension}`,
   );
   res.send(content);
+});
+
+// Get all contacts across all batches for the user
+export const getAllUserContacts = asyncHandler(async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = Math.min(parseInt(req.query.limit) || 50, 500);
+  const offset = (page - 1) * limit;
+
+  const searchTerm = req.query.searchTerm || "";
+  const filterStatus = req.query.filterStatus || "all";
+
+  // Build where clause for filtering records
+  const recordWhere = {
+    normalizedEmail: { [Op.ne]: null },
+  };
+
+  if (searchTerm) {
+    recordWhere[Op.or] = [
+      { normalizedEmail: { [Op.iLike]: `%${searchTerm}%` } },
+      { name: { [Op.iLike]: `%${searchTerm}%` } },
+    ];
+  }
+
+  // Build where clause for global registry if filtering by status
+  const registryWhere = {};
+  if (filterStatus !== "all") {
+    registryWhere.verificationStatus = filterStatus;
+  }
+
+  // Find all batches belonging to this user
+  const userBatches = await ListUploadBatch.findAll({
+    where: { userId: req.user.id },
+    attributes: ["id", "originalFilename"],
+  });
+
+  const batchIds = userBatches.map(b => b.id);
+
+  if (batchIds.length === 0) {
+    return res.json({
+      success: true,
+      data: {
+        contacts: [],
+        pagination: {
+          total: 0,
+          page,
+          limit,
+          pages: 0,
+        },
+      },
+    });
+  }
+
+  recordWhere.batchId = { [Op.in]: batchIds };
+
+  // Query records
+  const { count, rows: records } = await ListUploadRecord.findAndCountAll({
+    where: recordWhere,
+    include: [
+      {
+        model: GlobalEmailRegistry,
+        where: Object.keys(registryWhere).length > 0 ? registryWhere : undefined,
+        required: Object.keys(registryWhere).length > 0, // Only inner join if filtering by status
+        attributes: ["verificationStatus", "verifiedAt", "verificationMeta"],
+      },
+    ],
+    attributes: [
+      "id",
+      "batchId",
+      "status",
+      "rawEmail",
+      "normalizedEmail",
+      "name",
+      "metadata",
+      "failureReason",
+      "createdAt",
+    ],
+    order: [["createdAt", "DESC"]],
+    limit,
+    offset,
+  });
+
+  // Map batch IDs back to filenames for frontend convenience
+  const batchMap = {};
+  userBatches.forEach(b => {
+    batchMap[b.id] = b.originalFilename;
+  });
+
+  const mappedRecords = records.map((record) => ({
+    id: record.id,
+    sourceBatch: batchMap[record.batchId] || "Unknown",
+    status: record.status,
+    email: record.normalizedEmail || record.rawEmail,
+    name: record.name,
+    metadata: record.metadata || {},
+    failureReason: record.failureReason,
+    verificationStatus: record.GlobalEmailRegistry?.verificationStatus,
+    verifiedAt: record.GlobalEmailRegistry?.verifiedAt,
+    verificationReason: record.GlobalEmailRegistry?.verificationMeta,
+    createdAt: record.createdAt,
+  }));
+
+  res.json({
+    success: true,
+    data: {
+      contacts: mappedRecords,
+      pagination: {
+        total: count,
+        page,
+        limit,
+        pages: Math.ceil(count / limit),
+      },
+    },
+  });
 });

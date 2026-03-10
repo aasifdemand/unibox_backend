@@ -16,6 +16,7 @@ import ListUploadBatch from "./list-upload-batch.model.js";
 import ListUploadRecord from "./list-upload-record.model.js";
 import GlobalEmailRegistry from "./global-email-registry.model.js";
 import SenderHealth from "./sender-health.model.js";
+import Notification from "./notification.model.js";
 /* =====================================================
    USER OWNERSHIP
 ===================================================== */
@@ -338,4 +339,5 @@ export {
   ListUploadRecord,
   GlobalEmailRegistry,
   SenderHealth,
+  Notification,
 };

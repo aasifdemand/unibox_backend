@@ -81,6 +81,11 @@ const ListUploadBatch = sequelize.define(
       allowNull: false,
     },
 
+    mapping: {
+      type: DataTypes.JSONB,
+      allowNull: true,
+    },
+
     errorReason: DataTypes.TEXT,
   },
   {

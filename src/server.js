@@ -4,7 +4,9 @@ dotenv.config(); // ALWAYS first
 import { initGlobalErrorHandlers } from "./utils/error-handler.js";
 initGlobalErrorHandlers();
 
+import { createServer } from "http";
 import app from "./app.js";
+import { initSocket } from "./config/socket.js";
 import sequelize from "./config/db.js";
 import "./models/index.js";
 import { checkAllCampaignsCompletion } from "./utils/campaign-completion.checker.js";
@@ -29,7 +31,10 @@ async function startServer() {
       console.log("Database sync skipped (production mode)");
     }
 
-    app.listen(PORT, () => {
+    const httpServer = createServer(app);
+    await initSocket(httpServer);
+
+    httpServer.listen(PORT, () => {
       console.log(`API server running on port ${PORT} ❤️‍🔥`);
       console.log(`Swagger docs: http://localhost:${PORT}/api-docs 📝`);
     });
@@ -61,4 +66,8 @@ async function runCompletionChecker() {
   }, CAMPAIGN_CHECK_INTERVAL);
 }
 
-startServer();
+import { fileURLToPath } from "url";
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  startServer();
+}

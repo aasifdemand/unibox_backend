@@ -7,6 +7,7 @@ import {
   getUserBatches,
   retryBatch,
   uploadList,
+  getAllUserContacts,
 } from "../controllers/list-upload.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 
@@ -105,6 +106,17 @@ router.get("/batch/:batchId/status", protect, getBatchStatus);
  *       - cookieAuth: []
  */
 router.get("/batches", protect, getUserBatches);
+
+/**
+ * @swagger
+ * /api/v1/list/contacts:
+ *   get:
+ *     summary: Get all paginated contacts across all batches
+ *     tags: [Lists]
+ *     security:
+ *       - cookieAuth: []
+ */
+router.get("/contacts", protect, getAllUserContacts);
 
 // In your backend routes (list-upload.routes.js or similar)
 router.delete("/batch/:batchId", protect, deleteBatch);

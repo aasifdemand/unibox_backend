@@ -3,6 +3,7 @@ import Campaign from "../models/campaign.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
 import CampaignSend from "../models/campaign-send.model.js";
 import sequelize from "../config/db.js";
+import { emitToUser } from "./event-broadcaster.js";
 
 export async function checkAllCampaignsCompletion() {
   console.log(
@@ -171,6 +172,16 @@ export async function tryCompleteCampaign(campaignId) {
     };
 
     console.log(`[Campaign ${campaignId}] ✅ Campaign marked as completed`);
+
+    const campaign = await Campaign.findByPk(campaignId, { attributes: ['userId', 'name'] });
+    if (campaign) {
+      emitToUser(campaign.userId, "notification", {
+        type: "success",
+        category: "campaign",
+        title: "Campaign Completed",
+        message: `Your campaign "${campaign.name}" has finished sending to all valid recipients.`,
+      });
+    }
 
     // Log final stats
     console.log(

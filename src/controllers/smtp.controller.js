@@ -13,6 +13,11 @@ import {
 } from "../utils/redis-client.js";
 import { withRateLimit, clearMailboxLimiter } from "../utils/rate-limiter.js";
 import util from "util";
+import {
+  createImapConnection,
+  resolveFolder,
+  flattenBoxes
+} from "../utils/imap-helper.js";
 
 // Cache TTLs
 const CACHEerrTTL = {
@@ -21,126 +26,7 @@ const CACHEerrTTL = {
   SINGLEerrMESSAGE: 3600, // 60 minutes
 };
 
-function createImapConnection(sender) {
-  const imap = new Imap({
-    user: sender.email,
-    password: sender.imapPassword,
-    host: sender.imapHost,
-    port: sender.imapPort,
-    tls: sender.imapSecure,
-    tlsOptions: { rejectUnauthorized: false },
-    authTimeout: 15000,
-    connTimeout: 15000,
-  });
-
-  const connected = new Promise((resolve, reject) => {
-    imap.once("ready", () => resolve(imap));
-    imap.once("error", (err) => {
-      const isAuthError =
-        err.message.toLowerCase().includes("authentication failed") ||
-        err.message.toLowerCase().includes("invalid credentials");
-      reject(
-        new AppError(
-          `IMAP connection failed: ${err.message}`,
-          isAuthError ? 401 : 500,
-        ),
-      );
-    });
-    imap.connect();
-  });
-
-  return connected;
-}
-
-// =========================
-// PROVIDER-AWARE FOLDER RESOLVER
-// Gmail, Outlook, and generic SMTP servers all use different names for the same
-// system folders.  This function maps a friendly name to the actual IMAP folder
-// name used by the provider, with a live fallback lookup via getBoxes().
-// =========================
-async function resolveFolder(imap, sender, friendlyName) {
-  const upper = friendlyName.toUpperCase();
-
-  // --- Provider detection ------------------------------------------------
-  const host = (sender.imapHost || "").toLowerCase();
-  const isGmail = host.includes("gmail") || host.includes("googlemail");
-  const isOutlook =
-    host.includes("outlook") ||
-    host.includes("hotmail") ||
-    host.includes("live.com") ||
-    host.includes("office365");
-
-  // --- Static mappings -------------------------------------------------------
-  const GMAILerrMAP = {
-    INBOX: "INBOX",
-    SENT: "[Gmail]/Sent Mail",
-    DRAFTS: "[Gmail]/Drafts",
-    TRASH: "[Gmail]/Trash",
-    SPAM: "[Gmail]/Spam",
-    ARCHIVE: "[Gmail]/All Mail",
-    STARRED: "[Gmail]/Starred",
-    IMPORTANT: "[Gmail]/Important",
-  };
-
-  const OUTLOOKerrMAP = {
-    INBOX: "INBOX",
-    SENT: "Sent Items",
-    DRAFTS: "Drafts",
-    TRASH: "Deleted Items",
-    SPAM: "Junk Email",
-    ARCHIVE: "Archive",
-  };
-
-  // Return a known mapping immediately if available
-  if (isGmail && GMAILerrMAP[upper]) return GMAILerrMAP[upper];
-  if (isOutlook && OUTLOOKerrMAP[upper]) return OUTLOOKerrMAP[upper];
-
-  // If not a special folder or unknown provider, try the name directly first
-  // but fall back to a fuzzy search against the real folder list
-  const candidateNames = [friendlyName];
-  if (upper === "SENT")
-    candidateNames.push("Sent Items", "Sent", "[Gmail]/Sent Mail");
-  if (upper === "DRAFTS") candidateNames.push("Drafts", "[Gmail]/Drafts");
-  if (upper === "TRASH")
-    candidateNames.push("Deleted Items", "Trash", "[Gmail]/Trash", "Bin");
-  if (upper === "SPAM")
-    candidateNames.push("Junk Email", "Junk", "[Gmail]/Spam");
-  if (upper === "ARCHIVE") candidateNames.push("[Gmail]/All Mail", "Archive");
-
-  // Flatten the live box list and match against our candidates
-  try {
-    const boxes = await util.promisify(imap.getBoxes).bind(imap)();
-    const flatBoxes = flattenBoxes(boxes);
-    for (const candidate of candidateNames) {
-      const match = flatBoxes.find(
-        (b) =>
-          b.toLowerCase() === candidate.toLowerCase() ||
-          b.toLowerCase().endsWith("/" + candidate.toLowerCase()),
-      );
-      if (match) return match;
-    }
-  } catch (error) {
-    console.log(error);
-
-    // Ignore — fall through to the raw name
-  }
-
-  // Last resort: return whatever was requested
-  return friendlyName;
-}
-
-// Recursively flatten IMAP box tree into path strings
-function flattenBoxes(boxes, prefix = "") {
-  const result = [];
-  for (const [name, box] of Object.entries(boxes || {})) {
-    const fullPath = prefix ? `${prefix}${box.delimiter || "/"}${name}` : name;
-    result.push(fullPath);
-    if (box.children) {
-      result.push(...flattenBoxes(box.children, fullPath));
-    }
-  }
-  return result;
-}
+// IMAP helper functions moved to ../utils/imap-helper.js
 
 // =========================
 // HELPER: open a folder and return the box info

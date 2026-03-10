@@ -3,12 +3,12 @@ import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 initGlobalErrorHandlers();
 
 import Campaign from "../models/campaign.model.js";
-import Sender from "../models/sender.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
 import CampaignStep from "../models/campaign-step.model.js";
 import CampaignSend from "../models/campaign-send.model.js";
 import Email from "../models/email.model.js";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
+import { getSenderWithType } from "../models/index.js";
 
 import { getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
@@ -18,6 +18,11 @@ import { tryCompleteCampaign } from "../utils/campaign-completion.checker.js";
 import crypto from "crypto";
 
 import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc.js";
+import timezone from "dayjs/plugin/timezone.js";
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 const log = (level, message, meta = {}) =>
   console.log(
@@ -75,9 +80,8 @@ async function startWorker() {
       const { campaignId, recipientId } = JSON.parse(msg.content.toString());
 
       try {
-        const campaign = await Campaign.findByPk(campaignId, {
-          include: [{ model: Sender }]
-        });
+        const campaign = await Campaign.findByPk(campaignId);
+        const sender = campaign ? await getSenderWithType(campaign.senderId, campaign.senderType) : null;
         const recipient = await CampaignRecipient.findByPk(recipientId);
 
         /* =========================
@@ -180,7 +184,7 @@ async function startWorker() {
           last_name: lastName,
           firstName: firstName, // Common alternative
           lastName: lastName,   // Common alternative
-          sender_name: campaign.Sender?.name || '',
+          sender_name: sender?.displayName || sender?.name || '',
           ...recipient.metadata,
         };
 
@@ -228,7 +232,7 @@ async function startWorker() {
             status: "pending",
             currentStep: nextStep,
             lastSentAt: new Date(),
-            nextRunAt: dayjs()
+            nextRunAt: dayjs.utc()
               .add(nextStepConfig.delayMinutes || 0, "minute")
               .toDate(),
           });

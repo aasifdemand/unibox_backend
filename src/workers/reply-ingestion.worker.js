@@ -14,6 +14,7 @@ import Email from "../models/email.model.js";
 import ReplyEvent from "../models/reply-event.model.js";
 import Campaign from "../models/campaign.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
+import { emitToUser } from "../utils/event-broadcaster.js";
 
 import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
 import { refreshGoogleToken } from "../utils/refresh-google-token.js";
@@ -78,21 +79,31 @@ async function processReply({ sender, email, reply }) {
       repliedAt: reply.receivedAt || new Date(),
     });
 
-    // Stop recipient from further steps
+    // Update recipient status and stop further steps
     if (email.recipientId) {
-      await CampaignRecipient.update(
+      const recipient = await CampaignRecipient.findByPk(email.recipientId);
+
+      const [updatedCount] = await CampaignRecipient.update(
         {
           status: "replied",
           nextRunAt: null,
         },
-        { where: { id: email.recipientId } },
+        {
+          where: {
+            id: email.recipientId,
+            status: { [Op.ne]: "replied" } // Only update if not already replied
+          }
+        },
       );
-    }
 
-    await Campaign.increment("totalReplied", {
-      by: 1,
-      where: { id: email.campaignId },
-    });
+      // Only increment campaign total if this is the FIRST reply from this recipient
+      if (updatedCount > 0) {
+        await Campaign.increment("totalReplied", {
+          by: 1,
+          where: { id: email.campaignId },
+        });
+      }
+    }
 
     // Removed: await tryCompleteCampaign(email.campaignId); 
     // We let the campaign stay in 'running' status to keep tracking active and visible.
@@ -101,6 +112,23 @@ async function processReply({ sender, email, reply }) {
       emailId: email.id,
       campaignId: email.campaignId,
     });
+
+    const campaign = await Campaign.findByPk(email.campaignId, { attributes: ['userId', 'name'] });
+    if (campaign) {
+      emitToUser(campaign.userId, "notification", {
+        type: "info",
+        category: "reply",
+        title: "New Reply Received",
+        message: `${reply.from} replied to your email in "${campaign.name}".`,
+      });
+
+      // Emit a silent event for the Mailboxes UI to automatically refetch data
+      emitToUser(campaign.userId, "mailbox_updated", {
+        senderId: sender.id,
+        senderEmail: sender.email,
+        messageId: reply.messageId,
+      });
+    }
   } catch (err) {
     log("ERROR", "processReply failed", {
       error: err.message,
@@ -459,7 +487,7 @@ async function ingestImapReplies(sender) {
 
                   // Mark message as seen
                   msg.once("attributes", (attrs) => {
-                    imap.addFlags(attrs.uid, ["\\Seen"], () => {});
+                    imap.addFlags(attrs.uid, ["\\Seen"], () => { });
                   });
                 } catch (err) {
                   log("ERROR", "SMTP reply parse failed", {

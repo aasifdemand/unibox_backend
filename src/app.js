@@ -15,6 +15,7 @@ import emailTempalteRoutes from "./routes/email-template.routes.js";
 import mailboxesRoutes from "./routes/mailboxes.routes.js";
 import analyticsRoutes from "./routes/analytics.routes.js";
 import trackingRoutes from "./routes/tracking.route.js";
+import notificationRoutes from "./routes/notification.routes.js";
 import { responseMiddleware } from "./middlewares/response.middleware.js";
 import errorHandler from "./middlewares/error.middleware.js";
 import path from "path";
@@ -84,6 +85,7 @@ app.use("/api/v1/mta-detector", mTADetectorRoutes);
 app.use("/api/v1/templates", emailTempalteRoutes);
 app.use("/api/v1/mailboxes", mailboxesRoutes);
 app.use("/api/v1/track", trackingRoutes);
+app.use("/api/v1/notifications", notificationRoutes);
 
 // swagger
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));

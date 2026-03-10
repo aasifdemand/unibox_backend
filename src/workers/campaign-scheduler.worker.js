@@ -6,6 +6,11 @@ import CampaignRecipient from "../models/campaign-recipient.model.js";
 import { getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc.js";
+import timezone from "dayjs/plugin/timezone.js";
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 import { Op } from "sequelize";
 
 const log = (level, message, meta = {}) =>
@@ -37,7 +42,7 @@ const log = (level, message, meta = {}) =>
         // ▶️ scheduled → running
         if (
           campaign.status === "scheduled" &&
-          (!campaign.scheduledAt || dayjs().isAfter(campaign.scheduledAt))
+          (!campaign.scheduledAt || dayjs.utc().isAfter(campaign.scheduledAt))
         ) {
           await campaign.update({
             status: "running",
@@ -79,7 +84,7 @@ const log = (level, message, meta = {}) =>
           );
 
           await r.update({
-            nextRunAt: dayjs().add(10, "minute").toDate(),
+            nextRunAt: dayjs.utc().add(10, "minute").toDate(),
           });
 
           log("DEBUG", "➡️ Recipient enqueued", {
