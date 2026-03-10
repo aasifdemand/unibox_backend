@@ -299,47 +299,55 @@ export const forgotPassword = asyncHandler(async (req, res) => {
     throw new AppError("User not found", 404);
   }
 
-  const { otp, hashedOtp } = generateOtp();
+  const resetToken = crypto.randomBytes(32).toString("hex");
+  const hashedToken = crypto.createHash("sha256").update(resetToken).digest("hex");
 
-  user.resetOtp = hashedOtp;
+  user.resetOtp = hashedToken; // reusing the existing DB field for the token hash
   user.resetOtpExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
   await user.save();
 
+  const resetLink = `${process.env.FRONTEND_URL}/auth/reset-password?token=${resetToken}`;
+
   await sendEmail({
     to: user.email,
-    subject: "Password Reset OTP",
+    subject: "Password Reset Instructions",
     html: `
-      <h2>Password Reset</h2>
-      <p>Your OTP is:</p>
-      <h1>${otp}</h1>
-      <p>This OTP is valid for 10 minutes.</p>
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #2563eb;">Password Reset</h2>
+        <p>You requested a password reset. Click the button below to set a new password:</p>
+        
+        <div style="margin: 30px 0;">
+          <a href="${resetLink}" style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Reset Password</a>
+        </div>
+        
+        <p style="color: #6b7280; font-size: 14px;">This link is valid for 10 minutes.</p>
+      </div>
     `,
   });
 
   res.ok({
-    message: "OTP sent to email",
+    message: "Password reset link sent to email",
   });
 });
 
 export const resetPassword = asyncHandler(async (req, res) => {
-  const { email, otp, newPassword } = req.body;
+  const { token, newPassword } = req.body;
 
-  if (!email || !otp || !newPassword) {
-    throw new AppError("All fields are required", 400);
+  if (!token || !newPassword) {
+    throw new AppError("Invalid request. Missing token or password.", 400);
   }
 
-  const hashedOtp = crypto.createHash("sha256").update(otp).digest("hex");
+  const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
 
   const user = await User.findOne({
     where: {
-      email,
-      resetOtp: hashedOtp,
+      resetOtp: hashedToken,
       resetOtpExpires: { [Op.gt]: Date.now() },
     },
   });
 
   if (!user) {
-    throw new AppError("Invalid or expired OTP", 400);
+    throw new AppError("Invalid or expired password reset link.", 400);
   }
 
   user.password = await hashPassword(newPassword);
