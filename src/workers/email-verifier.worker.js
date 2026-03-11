@@ -191,7 +191,7 @@ async function startWorker() {
 
             await GlobalEmailRegistry.update(
               {
-                verificationStatus: immediateResults ? "completed" : "verifying",
+                verificationStatus: "verifying",
                 verificationMeta: { requestId, batchId, attempt, mode: immediateResults ? 'sync' : 'async' },
                 verifiedAt: new Date(),
               },
