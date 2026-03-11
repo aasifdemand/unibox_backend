@@ -767,6 +767,7 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
         errorReason: batch.errorReason,
         createdAt: batch.createdAt,
         updatedAt: batch.updatedAt,
+        verification: verificationStats,
       },
       counts: countsMap,
       verification: verificationStats,
