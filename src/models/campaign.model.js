@@ -40,7 +40,7 @@ const Campaign = sequelize.define(
     },
     listBatchId: {
       type: DataTypes.UUID,
-      allowNull: false,
+      allowNull: true,
     },
 
     status: {

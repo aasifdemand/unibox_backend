@@ -240,7 +240,7 @@ ListUploadRecord.belongsTo(ListUploadBatch, {
 
 Campaign.belongsTo(ListUploadBatch, {
   foreignKey: "listBatchId",
-  onDelete: "RESTRICT",
+  onDelete: "SET NULL",
 });
 ListUploadBatch.hasMany(Campaign, {
   foreignKey: "listBatchId",
