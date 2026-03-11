@@ -14,6 +14,13 @@ import Email from "../models/email.model.js";
 import CampaignStep from "../models/campaign-step.model.js";
 import { Op } from "sequelize";
 import sequelize from "../config/db.js";
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc.js";
+import timezone from "dayjs/plugin/timezone.js";
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
 
 export const getCampaigns = asyncHandler(async (req, res) => {
   const campaigns = await Campaign.findAll({
@@ -231,7 +238,9 @@ export const createCampaign = asyncHandler(async (req, res) => {
     htmlBody: htmlBody || "",
     textBody: textBody || "",
     previewText: previewText || "",
-    scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
+    scheduledAt: scheduledAt
+      ? dayjs.tz(scheduledAt, timezone || "UTC").utc().toDate()
+      : null,
     timezone: timezone || "UTC",
     throttlePerMinute: throttlePerMinute || 10,
     trackOpens: trackOpens !== undefined ? trackOpens : true,
@@ -334,7 +343,12 @@ export const updateCampaign = asyncHandler(async (req, res) => {
   if (textBody !== undefined) updates.textBody = textBody;
   if (previewText !== undefined) updates.previewText = previewText;
   if (scheduledAt !== undefined)
-    updates.scheduledAt = scheduledAt ? new Date(scheduledAt) : null;
+    updates.scheduledAt = scheduledAt
+      ? dayjs
+          .tz(scheduledAt, timezone || campaign.timezone || "UTC")
+          .utc()
+          .toDate()
+      : null;
   if (timezone !== undefined) updates.timezone = timezone;
   if (throttlePerMinute !== undefined)
     updates.throttlePerMinute = throttlePerMinute;
