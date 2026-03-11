@@ -59,16 +59,32 @@ async function submitBatchToEndBounce(emails) {
       },
     );
 
+    // Detect mode: 'sync'
+    if (res.data.mode === 'sync') {
+      console.log(`✅ Synchronous verification for ${res.data.email}: ${res.data.status}`);
+      const email = normalizeEmail(res.data.email);
+      return {
+        requestId: 'sync_' + Date.now(),
+        results: {
+          [email]: {
+            status: res.data.status ?? "unknown",
+            score: res.data.score ?? null,
+            raw: res.data,
+          }
+        }
+      };
+    }
+
     // Defensive check for requestId as underscore or camelCase
     const requestId = res.data.request_id || res.data.requestId;
     
     if (!requestId) {
-      console.error("❌ EndBounce response missing request_id:", res.data);
+      console.error("❌ EndBounce response missing request_id and not sync:", res.data);
       throw new Error("EndBounce failed to return a valid Request ID");
     }
 
     console.log(`🆔 requestId=${requestId}`);
-    return requestId;
+    return { requestId, results: null };
   } catch (error) {
     if (error.response) {
       console.error("❌ EndBounce Submit Error:", error.response.data);
@@ -170,41 +186,42 @@ async function startWorker() {
               await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
             }
 
-            const requestId = await submitBatchToEndBounce(pendingEmails);
+            const { requestId, results: immediateResults } = await submitBatchToEndBounce(pendingEmails);
+            let results = immediateResults;
 
             await GlobalEmailRegistry.update(
               {
-                verificationStatus: "verifying",
-                verificationMeta: { requestId, batchId, attempt },
+                verificationStatus: immediateResults ? "completed" : "verifying",
+                verificationMeta: { requestId, batchId, attempt, mode: immediateResults ? 'sync' : 'async' },
                 verifiedAt: new Date(),
               },
               {
                 where: {
                   normalizedEmail: { [Op.in]: pendingEmails },
-                  verificationStatus: "unknown",
+                  verificationStatus: { [Op.in]: ["unknown", "verifying"] },
                 },
               },
             );
 
-            let results = null;
+            if (!results) {
+              console.log(`⏳ Polling status for job: ${requestId}...`);
+              for (let poll = 1; poll <= MAX_POLL_ATTEMPTS; poll++) {
+                const status = await getJobStatus(requestId);
+                
+                if (status === "completed") {
+                  console.log(`✅ Job ${requestId} completed. Fetching results...`);
+                  const res = await pollBatchResults(requestId);
+                  results = res.results;
+                  break;
+                }
 
-            console.log(`⏳ Polling status for job: ${requestId}...`);
-            for (let poll = 1; poll <= MAX_POLL_ATTEMPTS; poll++) {
-              const status = await getJobStatus(requestId);
-              
-              if (status === "completed") {
-                console.log(`✅ Job ${requestId} completed. Fetching results...`);
-                const res = await pollBatchResults(requestId);
-                results = res.results;
-                break;
+                if (status === "failed" || status === "error") {
+                  console.error(`❌ Job ${requestId} ${status}. Skipping polling.`);
+                  break;
+                }
+
+                await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
               }
-
-              if (status === "failed" || status === "error") {
-                console.error(`❌ Job ${requestId} ${status}. Skipping polling.`);
-                break;
-              }
-
-              await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
             }
 
             if (!results) continue;
