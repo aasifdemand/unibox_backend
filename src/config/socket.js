@@ -16,7 +16,6 @@ export const initSocket = async (httpServer) => {
             methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             credentials: true,
         },
-        transports: ['websocket', 'polling'],
     });
 
     // Setup Redis Adapter for cross-process communication (Workers -> Server)
