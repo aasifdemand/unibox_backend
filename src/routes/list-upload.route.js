@@ -2,6 +2,7 @@ import { Router } from "express";
 import { upload } from "../middlewares/upload.middleware.js";
 import {
   deleteBatch,
+  deleteContact,
   exportBatch,
   getBatchStatus,
   getUserBatches,
@@ -120,6 +121,7 @@ router.get("/contacts", protect, getAllUserContacts);
 
 // In your backend routes (list-upload.routes.js or similar)
 router.delete("/batch/:batchId", protect, deleteBatch);
+router.delete("/contact/:recordId", protect, deleteContact);
 router.post("/batch/:batchId/retry", protect, retryBatch);
 router.get("/batch/:batchId/export", protect, exportBatch);
 

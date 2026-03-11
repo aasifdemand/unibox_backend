@@ -861,6 +861,31 @@ export const deleteBatch = asyncHandler(async (req, res) => {
   });
 });
 
+// Delete individual contact
+export const deleteContact = asyncHandler(async (req, res) => {
+  const record = await ListUploadRecord.findOne({
+    where: { id: req.params.recordId },
+    include: [{
+      model: ListUploadBatch,
+      where: { userId: req.user.id }
+    }]
+  });
+
+  if (!record) {
+    return res.status(404).json({
+      success: false,
+      message: "Contact not found or unauthorized",
+    });
+  }
+
+  await record.destroy();
+
+  res.json({
+    success: true,
+    message: "Contact deleted successfully",
+  });
+});
+
 // Retry batch
 export const retryBatch = asyncHandler(async (req, res) => {
   const batch = await ListUploadBatch.findOne({
