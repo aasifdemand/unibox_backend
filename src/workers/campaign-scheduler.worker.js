@@ -3,6 +3,7 @@ import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 initGlobalErrorHandlers();
 import Campaign from "../models/campaign.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
+import GlobalEmailRegistry from "../models/global-email-registry.model.js";
 import { getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 import dayjs from "dayjs";
@@ -62,6 +63,13 @@ const log = (level, message, meta = {}) =>
               [Op.or]: [{ [Op.lte]: new Date() }, { [Op.is]: null }],
             },
           },
+          include: [
+            {
+              model: GlobalEmailRegistry,
+              required: false, // Left Join
+              attributes: ["unsubscribed"],
+            },
+          ],
           order: [["nextRunAt", "ASC"]],
           limit: campaign.throttlePerMinute,
         });
@@ -72,6 +80,17 @@ const log = (level, message, meta = {}) =>
         });
 
         for (const r of recipients) {
+          // 🛡️ Global Unsubscribe Check (Joined status)
+          if (r.GlobalEmailRegistry?.unsubscribed) {
+            await r.update({ status: "stopped", nextRunAt: null });
+            log("INFO", "🚫 Recipient globally unsubscribed, skipping", {
+              campaignId: campaign.id,
+              recipientId: r.id,
+              email: r.email,
+            });
+            continue;
+          }
+
           channel.sendToQueue(
             QUEUES.CAMPAIGN_SEND,
             Buffer.from(

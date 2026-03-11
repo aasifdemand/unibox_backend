@@ -7,5 +7,6 @@ const router = express.Router();
 router.get("/open/:emailId", trackOpen);
 router.get("/click/:emailId", trackClick);
 router.get("/unsubscribe/:emailId", trackUnsubscribe);
+router.post("/unsubscribe/:emailId", trackUnsubscribe);
 
 export default router;

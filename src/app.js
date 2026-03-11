@@ -84,7 +84,7 @@ app.use("/api/v1/analytics", analyticsRoutes);
 app.use("/api/v1/mta-detector", mTADetectorRoutes);
 app.use("/api/v1/templates", emailTempalteRoutes);
 app.use("/api/v1/mailboxes", mailboxesRoutes);
-app.use("/api/v1/track", trackingRoutes);
+app.use("/api/v1/tracking", trackingRoutes);
 app.use("/api/v1/notifications", notificationRoutes);
 
 // swagger

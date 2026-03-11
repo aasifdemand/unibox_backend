@@ -1,7 +1,9 @@
 import { asyncHandler } from "../helpers/async-handler.js";
 import Email from "../models/email.model.js";
-import Campaign from "../models/campaign.model.js"; // ✅ Make sure this is imported
-import sequelize from "../config/db.js"; // ✅ Add this if not present
+import Campaign from "../models/campaign.model.js";
+import CampaignRecipient from "../models/campaign-recipient.model.js";
+import GlobalEmailRegistry from "../models/global-email-registry.model.js";
+import sequelize from "../config/db.js";
 
 export const trackOpen = asyncHandler(async (req, res) => {
   const { emailId } = req.params;
@@ -99,7 +101,7 @@ export const trackUnsubscribe = asyncHandler(async (req, res) => {
     const email = await Email.findByPk(emailId);
     if (email && email.recipientId) {
       // Find the recipient in the campaign
-      const recipient = await sequelize.models.CampaignRecipient.findByPk(email.recipientId);
+      const recipient = await CampaignRecipient.findByPk(email.recipientId);
       
       if (recipient && recipient.status !== "stopped" && recipient.status !== "completed") {
         await recipient.update({
@@ -107,6 +109,17 @@ export const trackUnsubscribe = asyncHandler(async (req, res) => {
           nextRunAt: null,
           metadata: { ...recipient.metadata, unsubscribed: true, unsubscribedAt: new Date() }
         });
+        
+        // 🔹 Mark globally unsubscribed in GlobalEmailRegistry
+        if (email.recipientEmail) {
+          const normalizedEmail = email.recipientEmail.toLowerCase().trim();
+          await GlobalEmailRegistry.upsert({
+            normalizedEmail,
+            unsubscribed: true,
+            unsubscribedAt: new Date(),
+            lastSeenAt: new Date()
+          });
+        }
         
         console.log(`🚫 Unsubscribe tracked for email ${emailId}`);
       }

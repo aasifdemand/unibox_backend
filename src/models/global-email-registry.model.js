@@ -51,6 +51,16 @@ const GlobalEmailRegistry = sequelize.define(
       type: DataTypes.DATE,
       defaultValue: DataTypes.NOW,
     },
+    
+    unsubscribed: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+    },
+    
+    unsubscribedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
 
     lastSeenAt: DataTypes.DATE,
   },
