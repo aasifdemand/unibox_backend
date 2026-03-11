@@ -37,6 +37,19 @@ const nextRetryMeta = (oldMeta = {}) => ({
   lastRetryAt: new Date(),
 });
 
+const mapStatus = (status) => {
+  const s = (status || "").toLowerCase();
+  const valid = ["valid", "invalid", "risky", "unknown", "verifying"];
+  if (valid.includes(s)) return s;
+
+  if (s === "completed" || s === "deliverable") return "valid";
+  if (s === "undeliverable") return "invalid";
+  if (s === "accept_all" || s === "risky" || s === "unverifiable") return "risky";
+
+  console.warn(`⚠️ Unmapped EndBounce status: "${status}", defaulting to "unknown"`);
+  return "unknown";
+};
+
 /* =========================
    ENDBOUNCE API
 ========================= */
@@ -67,7 +80,7 @@ async function submitBatchToEndBounce(emails) {
         requestId: 'sync_' + Date.now(),
         results: {
           [email]: {
-            status: res.data.status ?? "unknown",
+            status: mapStatus(res.data.status),
             score: res.data.score ?? null,
             raw: res.data,
           }
@@ -123,7 +136,7 @@ async function pollBatchResults(requestId) {
   if (res.data.rows?.length) {
     for (const row of res.data.rows) {
       results[normalizeEmail(row.email)] = {
-        status: row.status ?? "unknown",
+        status: mapStatus(row.status),
         score: row.score ?? null,
         raw: row,
       };
