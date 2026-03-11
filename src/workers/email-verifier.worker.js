@@ -40,23 +40,57 @@ const nextRetryMeta = (oldMeta = {}) => ({
 /* =========================
    ENDBOUNCE API
 ========================= */
+/* =========================
+   ENDBOUNCE API
+========================= */
 async function submitBatchToEndBounce(emails) {
   console.log(`📤 Submitting ${emails.length} emails to EndBounce`);
 
-  const res = await axios.post(
-    "https://api.endbounce.com/api/integrations/v1/verify",
-    { emails },
-    {
-      headers: {
-        "x-api-key": process.env.ENDBOUNCE_API_KEY,
-        "Content-Type": "application/json",
+  try {
+    const res = await axios.post(
+      "https://api.endbounce.com/api/integrations/v1/verify",
+      { emails },
+      {
+        headers: {
+          "x-api-key": process.env.ENDBOUNCE_API_KEY,
+          "Content-Type": "application/json",
+        },
+        timeout: 60000,
       },
-      timeout: 60000,
-    },
-  );
+    );
 
-  console.log(`🆔 requestId=${res.data.request_id}`);
-  return res.data.request_id;
+    // Defensive check for requestId as underscore or camelCase
+    const requestId = res.data.request_id || res.data.requestId;
+    
+    if (!requestId) {
+      console.error("❌ EndBounce response missing request_id:", res.data);
+      throw new Error("EndBounce failed to return a valid Request ID");
+    }
+
+    console.log(`🆔 requestId=${requestId}`);
+    return requestId;
+  } catch (error) {
+    if (error.response) {
+      console.error("❌ EndBounce Submit Error:", error.response.data);
+    }
+    throw error;
+  }
+}
+
+async function getJobStatus(requestId) {
+  try {
+    const res = await axios.get(
+      `https://api.endbounce.com/api/integrations/v1/jobs/${requestId}/status`,
+      {
+        headers: { "x-api-key": process.env.ENDBOUNCE_API_KEY },
+        timeout: 30000,
+      },
+    );
+    return res.data.status; // 'queued', 'processing', 'completed', 'failed'
+  } catch (error) {
+    console.error(`❌ Error checking status for ${requestId}:`, error.response?.data || error.message);
+    return "error";
+  }
 }
 
 async function pollBatchResults(requestId) {
@@ -154,12 +188,22 @@ async function startWorker() {
 
             let results = null;
 
+            console.log(`⏳ Polling status for job: ${requestId}...`);
             for (let poll = 1; poll <= MAX_POLL_ATTEMPTS; poll++) {
-              const res = await pollBatchResults(requestId);
-              if (res.ready) {
+              const status = await getJobStatus(requestId);
+              
+              if (status === "completed") {
+                console.log(`✅ Job ${requestId} completed. Fetching results...`);
+                const res = await pollBatchResults(requestId);
                 results = res.results;
                 break;
               }
+
+              if (status === "failed" || status === "error") {
+                console.error(`❌ Job ${requestId} ${status}. Skipping polling.`);
+                break;
+              }
+
               await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
             }
 
