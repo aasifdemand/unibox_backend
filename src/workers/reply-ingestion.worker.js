@@ -560,10 +560,26 @@ async function checkAllSenders() {
   running = true;
 
   try {
+    const activeCampaignFilter = {
+      model: Campaign,
+      required: true, // INNER JOIN: only senders with at least one matching campaign
+      where: { status: "running" },
+      attributes: [], // We don't need campaign data, just the filter
+    };
+
     const [gmail, outlook, smtpSenders] = await Promise.all([
-      GmailSender.findAll({ where: { isVerified: true } }),
-      OutlookSender.findAll({ where: { isVerified: true } }),
-      SmtpSender.findAll({ where: { isVerified: true, isActive: true } }),
+      GmailSender.findAll({
+        where: { isVerified: true },
+        include: [activeCampaignFilter],
+      }),
+      OutlookSender.findAll({
+        where: { isVerified: true },
+        include: [activeCampaignFilter],
+      }),
+      SmtpSender.findAll({
+        where: { isVerified: true, isActive: true },
+        include: [activeCampaignFilter],
+      }),
     ]);
 
     // Run each provider in parallel batches of BATCH_SIZE
