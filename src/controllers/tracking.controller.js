@@ -2,6 +2,7 @@ import { asyncHandler } from "../helpers/async-handler.js";
 import Email from "../models/email.model.js";
 import Campaign from "../models/campaign.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
+import CampaignSend from "../models/campaign-send.model.js";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
 import sequelize from "../config/db.js";
 
@@ -24,6 +25,12 @@ export const trackOpen = asyncHandler(async (req, res) => {
         by: 1,
         where: { id: email.campaignId },
       });
+
+      // Update CampaignSend record for orchestration
+      await CampaignSend.update(
+        { openedAt: new Date() },
+        { where: { emailId: email.id } }
+      );
 
       console.log(`✅ Open tracked for email ${emailId}`);
     }
@@ -83,6 +90,12 @@ export const trackClick = asyncHandler(async (req, res) => {
         where: { id: email.campaignId },
       });
 
+      // Update CampaignSend record for orchestration
+      await CampaignSend.update(
+        { clickedAt: new Date() },
+        { where: { emailId: email.id } }
+      );
+
       console.log(`✅ Click tracked for email ${emailId} to ${decodedUrl}`);
     }
   } catch (error) {
@@ -109,6 +122,13 @@ export const trackUnsubscribe = asyncHandler(async (req, res) => {
           nextRunAt: null,
           metadata: { ...recipient.metadata, unsubscribed: true, unsubscribedAt: new Date() }
         });
+        
+        // Update campaign stats
+        if (email.campaignId) {
+          await Campaign.increment("totalUnsubscribed", {
+            where: { id: email.campaignId },
+          });
+        }
         
         // 🔹 Mark globally unsubscribed in GlobalEmailRegistry
         if (email.recipientEmail) {

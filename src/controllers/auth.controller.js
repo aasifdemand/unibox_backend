@@ -4,7 +4,6 @@ import { comparePassword, hashPassword } from "../helpers/hash-password.js";
 import User from "../models/user.model.js";
 import { asyncHandler } from "../helpers/async-handler.js";
 import { sendEmail } from "../utils/send-email.js";
-import { generateOtp } from "../helpers/generate-otp.js";
 import crypto from "node:crypto";
 import { Op } from "sequelize";
 import { generateVerificationOtp } from "../helpers/gen-verification-otp.js";
@@ -272,7 +271,7 @@ export const logout = asyncHandler(async (req, res) => {
   }
 
   if (req.session) {
-    req.session.destroy(() => {});
+    req.session.destroy(() => { });
   }
 
   res.clearCookie("access_token", {

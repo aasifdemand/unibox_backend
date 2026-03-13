@@ -13,6 +13,8 @@ import timezone from "dayjs/plugin/timezone.js";
 dayjs.extend(utc);
 dayjs.extend(timezone);
 import { Op } from "sequelize";
+import { getSenderWithType } from "../models/index.js";
+import { DeliveryGuard } from "../utils/delivery-guard.js";
 
 const log = (level, message, meta = {}) =>
   console.log(
@@ -40,76 +42,63 @@ const log = (level, message, meta = {}) =>
       });
 
       for (const campaign of campaigns) {
-        // ▶️ scheduled → running
-        if (
-          campaign.status === "scheduled" &&
-          (!campaign.scheduledAt || dayjs.utc().isAfter(campaign.scheduledAt))
-        ) {
-          await campaign.update({
-            status: "running",
-            scheduledAt: campaign.scheduledAt || new Date(),
-          });
-
+        // ... (campaign status update logic remains same)
+        if (campaign.status === "scheduled" && (!campaign.scheduledAt || dayjs.utc().isAfter(campaign.scheduledAt))) {
+          await campaign.update({ status: "running", scheduledAt: campaign.scheduledAt || new Date() });
           log("INFO", "▶️ Campaign started", { campaignId: campaign.id });
         }
-
         if (campaign.status !== "running") continue;
+
+        /* =========================
+           WORM-UP & DAILY LIMITS
+        ========================= */
+        const sender = await getSenderWithType(campaign.senderId, campaign.senderType);
+        if (!sender) {
+          log("ERROR", "❌ Sender not found for campaign", { campaignId: campaign.id });
+          continue;
+        }
+
+        const health = await DeliveryGuard.canSendToday(sender);
+        if (!health.allowed) {
+          log("WARN", "⏳ Sender reached daily warm-up limit", {
+            sender: sender.email,
+            limit: health.limit,
+            current: health.currentCount,
+          });
+          continue;
+        }
+
+        // Adjust batch size based on remaining daily quota and throttle
+        const batchSize = Math.min(campaign.throttlePerMinute, health.remaining);
 
         const recipients = await CampaignRecipient.findAll({
           where: {
             campaignId: campaign.id,
             status: "pending",
-            nextRunAt: {
-              [Op.or]: [{ [Op.lte]: new Date() }, { [Op.is]: null }],
-            },
+            nextRunAt: { [Op.or]: [{ [Op.lte]: new Date() }, { [Op.is]: null }] },
           },
-          include: [
-            {
-              model: GlobalEmailRegistry,
-              required: false, // Left Join
-              attributes: ["unsubscribed"],
-            },
-          ],
+          include: [{ model: GlobalEmailRegistry, required: false, attributes: ["unsubscribed"] }],
           order: [["nextRunAt", "ASC"]],
-          limit: campaign.throttlePerMinute,
+          limit: batchSize,
         });
 
-        log("DEBUG", "📤 Recipients ready", {
+        if (recipients.length === 0) continue;
+
+        log("DEBUG", "📤 Batching recipients", {
           campaignId: campaign.id,
           count: recipients.length,
+          dailyRemaining: health.remaining,
         });
 
         for (const r of recipients) {
-          // 🛡️ Global Unsubscribe Check (Joined status)
+          // ... (existing suppression and queue logic)
           if (r.GlobalEmailRegistry?.unsubscribed) {
-            await r.update({ status: "stopped", nextRunAt: null });
-            log("INFO", "🚫 Recipient globally unsubscribed, skipping", {
-              campaignId: campaign.id,
-              recipientId: r.id,
-              email: r.email,
-            });
+            await r.update({ status: "unsubscribed", nextRunAt: null });
             continue;
           }
 
-          channel.sendToQueue(
-            QUEUES.CAMPAIGN_SEND,
-            Buffer.from(
-              JSON.stringify({
-                campaignId: campaign.id,
-                recipientId: r.id,
-              }),
-            ),
-            { persistent: true },
-          );
-
-          await r.update({
-            nextRunAt: dayjs.utc().add(10, "minute").toDate(),
-          });
-
-          log("DEBUG", "➡️ Recipient enqueued", {
-            campaignId: campaign.id,
-            recipientId: r.id,
-          });
+          channel.sendToQueue(QUEUES.CAMPAIGN_SEND, Buffer.from(JSON.stringify({ campaignId: campaign.id, recipientId: r.id })), { persistent: true });
+          await r.update({ nextRunAt: dayjs.utc().add(10, "minute").toDate() });
         }
       }
     } catch (err) {

@@ -40,8 +40,20 @@ const CampaignStep = sequelize.define(
     },
 
     condition: {
-      type: DataTypes.ENUM("always", "no_reply"),
+      type: DataTypes.ENUM("always", "no_reply", "on_open", "on_click"),
       defaultValue: "always",
+    },
+
+    // Branching logic: jump to this stepOrder if condition is met
+    onConditionStepOrder: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+
+    // A/B Testing: array of { subject, htmlBody, textBody, weight }
+    variants: {
+      type: DataTypes.JSONB,
+      defaultValue: [],
     },
   },
   {

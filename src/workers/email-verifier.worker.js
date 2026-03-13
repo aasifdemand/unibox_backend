@@ -1,4 +1,3 @@
-// workers/email-verifier.worker.js
 import "../models/index.js";
 import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 initGlobalErrorHandlers();
@@ -9,6 +8,10 @@ import ListUploadBatch from "../models/list-upload-batch.model.js";
 import { getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 import { Op } from "sequelize";
+
+import { HttpsProxyAgent } from "https-proxy-agent";
+
+import { getNextProxy } from "../utils/proxy-fetcher.js";
 
 /* =========================
    CONSTANTS
@@ -60,16 +63,23 @@ async function submitBatchToEndBounce(emails) {
   console.log(`📤 Submitting ${emails.length} emails to EndBounce`);
 
   try {
+    const proxy = await getNextProxy();
+    const config = {
+      headers: {
+        "x-api-key": process.env.ENDBOUNCE_API_KEY,
+        "Content-Type": "application/json",
+      },
+      timeout: 60000,
+    };
+    if (proxy) {
+      config.httpsAgent = new HttpsProxyAgent(proxy);
+      config.proxy = false;
+    }
+
     const res = await axios.post(
       "https://api.endbounce.com/api/integrations/v1/verify",
       { emails },
-      {
-        headers: {
-          "x-api-key": process.env.ENDBOUNCE_API_KEY,
-          "Content-Type": "application/json",
-        },
-        timeout: 60000,
-      },
+      config
     );
 
     // Detect mode: 'sync'
@@ -90,7 +100,7 @@ async function submitBatchToEndBounce(emails) {
 
     // Defensive check for requestId as underscore or camelCase
     const requestId = res.data.request_id || res.data.requestId;
-    
+
     if (!requestId) {
       console.error("❌ EndBounce response missing request_id and not sync:", res.data);
       throw new Error("EndBounce failed to return a valid Request ID");
@@ -108,12 +118,19 @@ async function submitBatchToEndBounce(emails) {
 
 async function getJobStatus(requestId) {
   try {
+    const proxy = await getNextProxy();
+    const config = {
+      headers: { "x-api-key": process.env.ENDBOUNCE_API_KEY },
+      timeout: 30000,
+    };
+    if (proxy) {
+      config.httpsAgent = new HttpsProxyAgent(proxy);
+      config.proxy = false;
+    }
+
     const res = await axios.get(
       `https://api.endbounce.com/api/integrations/v1/jobs/${requestId}/status`,
-      {
-        headers: { "x-api-key": process.env.ENDBOUNCE_API_KEY },
-        timeout: 30000,
-      },
+      config
     );
     return res.data.status; // 'queued', 'processing', 'completed', 'failed'
   } catch (error) {
@@ -123,13 +140,20 @@ async function getJobStatus(requestId) {
 }
 
 async function pollBatchResults(requestId) {
+  const proxy = await getNextProxy();
+  const config = {
+    params: { status: "all" },
+    headers: { "x-api-key": process.env.ENDBOUNCE_API_KEY },
+    timeout: 30000,
+  };
+  if (proxy) {
+    config.httpsAgent = new HttpsProxyAgent(proxy);
+    config.proxy = false;
+  }
+
   const res = await axios.get(
     `https://api.endbounce.com/api/integrations/v1/jobs/${requestId}/results`,
-    {
-      params: { status: "all" },
-      headers: { "x-api-key": process.env.ENDBOUNCE_API_KEY },
-      timeout: 30000,
-    },
+    config
   );
 
   const results = {};
@@ -220,7 +244,7 @@ async function startWorker() {
               console.log(`⏳ Polling status for job: ${requestId}...`);
               for (let poll = 1; poll <= MAX_POLL_ATTEMPTS; poll++) {
                 const status = await getJobStatus(requestId);
-                
+
                 if (status === "completed") {
                   console.log(`✅ Job ${requestId} completed. Fetching results...`);
                   const res = await pollBatchResults(requestId);

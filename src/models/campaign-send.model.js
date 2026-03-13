@@ -25,6 +25,13 @@ const CampaignSend = sequelize.define(
     sentAt: DataTypes.DATE,
     openedAt: DataTypes.DATE,
     repliedAt: DataTypes.DATE,
+    clickedAt: DataTypes.DATE,
+    
+    // Which A/B variant was used? (index or identifier)
+    variantId: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
     // Add senderType field
     senderType: {
       type: DataTypes.ENUM("gmail", "outlook", "smtp"),

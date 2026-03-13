@@ -13,6 +13,7 @@ import {
   getCachedData,
   setCachedData,
 } from "../utils/redis-client.js";
+import { DeliveryGuard } from "../utils/delivery-guard.js";
 
 const MAILBOX_CACHE_TTL = 1800; // 30 minutes
 
@@ -372,44 +373,71 @@ export const getMailboxes = asyncHandler(async (req, res) => {
       : Promise.resolve([]),
   ]);
 
-  const allMailboxes = [
-    ...gmailSenders.map((s) => ({
-      id: s.id,
-      type: "gmail",
-      email: s.email,
-      displayName: s.displayName,
-      domain: s.domain,
-      isVerified: s.isVerified,
-      isActive: true,
-      updatedAt: s.updatedAt,
-      lastSyncAt: s.lastUsedAt,
-      stats: { dailySent: s.dailySentCount || 0 },
-    })),
-    ...outlookSenders.map((s) => ({
-      id: s.id,
-      type: "outlook",
-      email: s.email,
-      displayName: s.displayName,
-      domain: s.domain,
-      isVerified: s.isVerified,
-      isActive: true,
-      updatedAt: s.updatedAt,
-      lastSyncAt: s.lastUsedAt,
-      stats: { dailySent: s.dailySentCount || 0 },
-    })),
-    ...smtpSenders.map((s) => ({
-      id: s.id,
-      type: "smtp",
-      email: s.email,
-      displayName: s.displayName,
-      domain: s.domain,
-      isVerified: s.isVerified,
-      isActive: s.isActive,
-      updatedAt: s.updatedAt,
-      lastSyncAt: s.lastInboxSyncAt || s.lastUsedAt,
-      stats: { dailySent: s.dailySentCount || 0 },
-    })),
-  ];
+  const allMailboxes = await Promise.all([
+    ...gmailSenders.map(async (s) => {
+      const health = await DeliveryGuard.canSendToday(s);
+      return {
+        id: s.id,
+        type: "gmail",
+        email: s.email,
+        displayName: s.displayName,
+        domain: s.domain,
+        isVerified: s.isVerified,
+        isActive: true,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+        lastSyncAt: s.lastUsedAt,
+        stats: { 
+          dailySent: health.currentCount,
+          dailyLimit: health.limit,
+          remaining: health.remaining,
+          warmupScore: Math.round((health.limit / DeliveryGuard.LIMITS.GMAIL.max) * 100)
+        },
+      };
+    }),
+    ...outlookSenders.map(async (s) => {
+      const health = await DeliveryGuard.canSendToday(s);
+      return {
+        id: s.id,
+        type: "outlook",
+        email: s.email,
+        displayName: s.displayName,
+        domain: s.domain,
+        isVerified: s.isVerified,
+        isActive: true,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+        lastSyncAt: s.lastUsedAt,
+        stats: { 
+          dailySent: health.currentCount,
+          dailyLimit: health.limit,
+          remaining: health.remaining,
+          warmupScore: Math.round((health.limit / DeliveryGuard.LIMITS.OUTLOOK.max) * 100)
+        },
+      };
+    }),
+    ...smtpSenders.map(async (s) => {
+      const health = await DeliveryGuard.canSendToday(s);
+      return {
+        id: s.id,
+        type: "smtp",
+        email: s.email,
+        displayName: s.displayName,
+        domain: s.domain,
+        isVerified: s.isVerified,
+        isActive: s.isActive,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+        lastSyncAt: s.lastInboxSyncAt || s.lastUsedAt,
+        stats: { 
+          dailySent: health.currentCount,
+          dailyLimit: health.limit,
+          remaining: health.remaining,
+          warmupScore: Math.round((health.limit / DeliveryGuard.LIMITS.SMTP.max) * 100)
+        },
+      };
+    }),
+  ]);
 
   // Global sort and paginate
   allMailboxes.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));

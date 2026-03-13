@@ -7,6 +7,8 @@ import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import { randomUUID } from "crypto";
 import axios from "axios";
 import dns from "dns/promises";
+import fs from "fs";
+import path from "path";
 
 import Email from "../models/email.model.js";
 import GmailSender from "../models/gmail-sender.model.js";
@@ -29,6 +31,10 @@ import {
   resolveFolder,
   appendToFolder,
 } from "../utils/imap-helper.js";
+
+import { HttpsProxyAgent } from "https-proxy-agent";
+
+import { getNextProxy } from "../utils/proxy-fetcher.js";
 
 const redis = new Redis(process.env.REDIS_URL);
 
@@ -107,8 +113,9 @@ async function checkSenderDns(domain) {
 const transporterCache = new Map(); // senderId → { transporter, expiresAt }
 const TRANSPORTER_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
-function getOrCreateTransporter(sender) {
-  const cached = transporterCache.get(sender.id);
+function getOrCreateTransporter(sender, proxy = null) {
+  const cacheKey = `${sender.id}:${proxy || 'direct'}`;
+  const cached = transporterCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
     return cached.transporter;
   }
@@ -125,9 +132,14 @@ function getOrCreateTransporter(sender) {
       rejectUnauthorized: false,
     },
   };
+
+  if (proxy) {
+    transportConfig.proxy = proxy;
+  }
+
   const transporter = nodemailer.createTransport(transportConfig);
 
-  transporterCache.set(sender.id, {
+  transporterCache.set(cacheKey, {
     transporter,
     expiresAt: Date.now() + TRANSPORTER_TTL_MS,
   });
@@ -205,6 +217,9 @@ async function startWorker() {
           senderType,
           policy = {},
         } = JSON.parse(msg.content.toString());
+
+        const proxy = await getNextProxy();
+        if (proxy) log("DEBUG", "🌐 Using proxy for this send", { proxy });
 
         emailRecord = await Email.findByPk(emailId);
 
@@ -284,7 +299,7 @@ async function startWorker() {
         let providerConversationId = null;
 
         if (senderType === "smtp") {
-          const transporter = getOrCreateTransporter(sender);
+          const transporter = getOrCreateTransporter(sender, proxy);
 
           // 🔍 DNS pre-send check — warn if SPF/DKIM/DMARC are missing
           checkSenderDns(domain)
@@ -435,14 +450,21 @@ async function startWorker() {
             .replace(/\//g, "_")
             .replace(/=+$/, "");
 
+          const axiosConfig = {
+            headers: {
+              Authorization: `Bearer ${token.accessToken}`,
+            },
+          };
+
+          if (proxy) {
+            axiosConfig.httpsAgent = new HttpsProxyAgent(proxy);
+            axiosConfig.proxy = false;
+          }
+
           const res = await axios.post(
             "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
             { raw: encoded },
-            {
-              headers: {
-                Authorization: `Bearer ${token.accessToken}`,
-              },
-            },
+            axiosConfig
           );
 
           providerMessageId = res.data.id;
@@ -485,10 +507,16 @@ async function startWorker() {
             );
           }
 
+          const axiosConfig = { headers: { Authorization: `Bearer ${token}` } };
+          if (proxy) {
+            axiosConfig.httpsAgent = new HttpsProxyAgent(proxy);
+            axiosConfig.proxy = false;
+          }
+
           const res = await axios.post(
             "https://graph.microsoft.com/v1.0/me/messages",
             messagePayload,
-            { headers: { Authorization: `Bearer ${token}` } },
+            axiosConfig
           );
 
           providerMessageId = res.data.id;
@@ -499,7 +527,7 @@ async function startWorker() {
           await axios.post(
             `https://graph.microsoft.com/v1.0/me/messages/${res.data.id}/send`,
             {},
-            { headers: { Authorization: `Bearer ${token}` } },
+            axiosConfig
           );
         }
 

@@ -133,16 +133,32 @@ async function startWorker() {
         }
 
         /* =========================
-           EMAIL VERIFICATION
+           GLOBAL SUPPRESSION & VERIFICATION
         ========================= */
-        const verified = await GlobalEmailRegistry.findOne({
+        const globalRegistry = await GlobalEmailRegistry.findOne({
           where: {
             normalizedEmail: recipient.email.toLowerCase(),
-            verificationStatus: "valid",
           },
         });
 
-        if (!verified) {
+        // 1. Check for Unsubscribes (Compliance)
+        if (globalRegistry?.unsubscribed) {
+          await recipient.update({
+            status: "unsubscribed", // Specific status for exclusion
+            nextRunAt: null,
+          });
+
+          log("INFO", "🚫 Recipient suppressed (Globally Unsubscribed)", {
+            recipientId,
+            email: recipient.email,
+          });
+
+          await tryCompleteCampaign(campaignId);
+          return channel.ack(msg);
+        }
+
+        // 2. Check for Verification
+        if (globalRegistry?.verificationStatus !== "valid") {
           await recipient.update({
             status: "stopped",
             nextRunAt: null,
@@ -157,6 +173,70 @@ async function startWorker() {
         }
 
         /* =========================
+           CONDITIONAL LOGIC CHECK
+        ========================= */
+        if (step > 0 && stepConfig.condition !== "always") {
+          // Check previous send for condition
+          const previousSend = await CampaignSend.findOne({
+            where: { campaignId, recipientId, step: step - 1 },
+            order: [["createdAt", "DESC"]],
+          });
+
+          let conditionMet = false;
+          if (previousSend) {
+            if (stepConfig.condition === "no_reply" && !previousSend.repliedAt) conditionMet = true;
+            if (stepConfig.condition === "on_open" && previousSend.openedAt) conditionMet = true;
+            if (stepConfig.condition === "on_click" && previousSend.clickedAt) conditionMet = true;
+          }
+
+          if (!conditionMet) {
+            log("INFO", "⏭️ Condition not met, skipping step", {
+              recipientId,
+              step,
+              condition: stepConfig.condition,
+            });
+            // Skip to next step
+            const nextStep = step + 1;
+            await recipient.update({
+              currentStep: nextStep,
+              nextRunAt: new Date(), // Process immediately to find a step that matches
+            });
+            // Re-publish to process next step
+            channel.sendToQueue(QUEUES.CAMPAIGN_SEND, Buffer.from(JSON.stringify({ campaignId, recipientId })));
+            return channel.ack(msg);
+          }
+        }
+
+        /* =========================
+           A/B TESTING & VARIANT SELECTION
+        ========================= */
+        let activeSubject = stepConfig.subject;
+        let activeHtml = stepConfig.htmlBody;
+        let activeText = stepConfig.textBody;
+        let variantId = "default";
+
+        if (Array.isArray(stepConfig.variants) && stepConfig.variants.length > 0) {
+          // Weighted random selection
+          const totalWeight = stepConfig.variants.reduce((sum, v) => sum + (v.weight || 1), 1); // +1 for default
+          const pick = Math.random() * totalWeight;
+          
+          let currentWeight = 1; // Default variant weight
+          if (pick > currentWeight) {
+            for (let i = 0; i < stepConfig.variants.length; i++) {
+              currentWeight += stepConfig.variants[i].weight || 1;
+              if (pick <= currentWeight) {
+                const variant = stepConfig.variants[i];
+                activeSubject = variant.subject || activeSubject;
+                activeHtml = variant.htmlBody || activeHtml;
+                activeText = variant.textBody || activeText;
+                variantId = `variant_${i}`;
+                break;
+              }
+            }
+          }
+        }
+
+        /* =========================
            IDEMPOTENT SEND
         ========================= */
         const [send, created] = await CampaignSend.findOrCreate({
@@ -164,6 +244,7 @@ async function startWorker() {
           defaults: {
             senderId: campaign.senderId,
             status: "queued",
+            variantId,
           },
         });
 
@@ -189,9 +270,9 @@ async function startWorker() {
           ...recipient.metadata,
         };
 
-        const renderedSubject = renderTemplate(stepConfig.subject, variables);
-        const renderedHtmlRaw = renderTemplate(stepConfig.htmlBody, variables);
-        const renderedText = renderTemplate(stepConfig.textBody, variables);
+        const renderedSubject = renderTemplate(activeSubject, variables);
+        const renderedHtmlRaw = renderTemplate(activeHtml, variables);
+        const renderedText = renderTemplate(activeText, variables);
 
         // 🎯 PRE-GENERATE EMAIL ID FOR TRACKING
         const emailId = crypto.randomUUID();
@@ -216,14 +297,15 @@ async function startWorker() {
           status: "pending",
           metadata: {
             step,
-            rawSubject: stepConfig.subject,
+            variantId,
+            rawSubject: activeSubject,
           },
         });
 
         /* =========================
            NEXT STEP SCHEDULING
         ========================= */
-        const nextStep = step + 1;
+        const nextStep = stepConfig.onConditionStepOrder || step + 1;
         const nextStepConfig = await CampaignStep.findOne({
           where: { campaignId, stepOrder: nextStep },
         });
@@ -274,13 +356,43 @@ async function startWorker() {
 
         channel.ack(msg);
       } catch (err) {
+        // ERROR HANDLING with RETRY LOGIC & DLQ
+        const headers = msg.properties.headers || {};
+        const retryCount = (headers["x-retry-count"] || 0) + 1;
+
         log("ERROR", "❌ Orchestrator failed", {
           campaignId,
           recipientId,
+          retryCount,
           error: err.message,
-          stack: err.stack,
         });
-        channel.ack(msg);
+
+        if (retryCount <= 3) {
+          // Exponential backoff or just re-queue with delay?
+          // For now, re-queue with incremented retry count
+          channel.publish(
+            "",
+            QUEUES.CAMPAIGN_SEND,
+            msg.content,
+            { headers: { "x-retry-count": retryCount }, persistent: true }
+          );
+          channel.ack(msg);
+        } else {
+          // Final failure - move to a "dead letter" manual check log
+          const dlqQueue = `${QUEUES.CAMPAIGN_SEND}_DLQ`;
+          await channel.assertQueue(dlqQueue, { durable: true });
+          channel.sendToQueue(dlqQueue, msg.content, {
+            headers: { ...headers, "x-final-error": err.message },
+            persistent: true
+          });
+          
+          log("FATAL", "💀 Message moved to DLQ", {
+            campaignId,
+            recipientId,
+            dlqQueue
+          });
+          channel.ack(msg);
+        }
       }
     });
 

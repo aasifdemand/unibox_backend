@@ -33,6 +33,7 @@
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "googleapis": "^171.4.0",
+    "https-proxy-agent": "^8.0.0",
     "imap": "^0.8.19",
     "ioredis": "^5.9.3",
     "jsonwebtoken": "^9.0.3",

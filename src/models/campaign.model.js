@@ -92,6 +92,14 @@ const Campaign = sequelize.define(
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
+    totalBounces: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
+    totalUnsubscribed: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
 
     completedAt: {
       type: DataTypes.DATE,
