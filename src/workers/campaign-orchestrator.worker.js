@@ -59,6 +59,7 @@ async function startWorker() {
       "🚀 CAMPAIGN-ORCHESTRATOR WORKER STARTING AT:",
       new Date().toISOString(),
     );
+    console.log("📍 TRACKING BASE URL:", process.env.APP_URL || "http://localhost:8080");
     console.log("=".repeat(80));
 
     channel = await getChannel();
