@@ -18,6 +18,7 @@ import { emitToUser } from "../utils/event-broadcaster.js";
 
 import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
 import { refreshGoogleToken } from "../utils/refresh-google-token.js";
+import { tryCompleteCampaign } from "../utils/campaign-completion.checker.js";
 
 /* =========================
    LOGGER
@@ -105,7 +106,7 @@ async function processReply({ sender, email, reply }) {
       }
     }
 
-    // Removed: await tryCompleteCampaign(email.campaignId); 
+    await tryCompleteCampaign(email.campaignId);
     // We let the campaign stay in 'running' status to keep tracking active and visible.
 
     log("INFO", "Reply processed successfully", {

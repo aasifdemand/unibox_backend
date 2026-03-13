@@ -249,7 +249,7 @@ async function startWorker() {
             campaignId,
             recipientId,
           });
-          // Removed: await tryCompleteCampaign(campaignId); 
+          await tryCompleteCampaign(campaignId);
         }
 
         await send.update({ emailId: email.id });
