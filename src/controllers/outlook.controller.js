@@ -939,6 +939,15 @@ export const sendOutlookMessage = asyncHandler(async (req, res) => {
     const ccRecipients = parseRecipients(cc);
     const bccRecipients = parseRecipients(bcc);
 
+    // Inject tracking
+    const { injectTracking } = await import("../utils/tracking-injector.js");
+    const emailId = (await import("crypto")).randomUUID();
+    
+    const trackedHtml = injectTracking(html || body, emailId, {
+      trackOpens: true,
+      trackClicks: true,
+    });
+
     // Build message
     const message = {
       subject,
@@ -946,8 +955,8 @@ export const sendOutlookMessage = asyncHandler(async (req, res) => {
       ccRecipients,
       bccRecipients,
       body: {
-        contentType: html ? "html" : "text",
-        content: html || body,
+        contentType: "html",
+        content: trackedHtml,
       },
     };
 

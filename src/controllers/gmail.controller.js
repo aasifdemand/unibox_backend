@@ -1150,6 +1150,15 @@ export const sendGmailMessage = asyncHandler(async (req, res) => {
     try {
       const gmail = await getGmailClient(sender);
 
+      // Inject tracking
+      const { injectTracking } = await import("../utils/tracking-injector.js");
+      const emailId = (await import("crypto")).randomUUID();
+      
+      const trackedHtml = injectTracking(html || body, emailId, {
+        trackOpens: true,
+        trackClicks: true,
+      });
+
       const mailOptions = {
         from: `"${sender.name}" <${sender.email}>`,
         to: cleanRecipients(to),
@@ -1157,7 +1166,7 @@ export const sendGmailMessage = asyncHandler(async (req, res) => {
         bcc: cleanRecipients(bcc),
         subject,
         text: body,
-        html: html || body,
+        html: trackedHtml,
         attachments: (attachments || []).map((att) => ({
           filename: att.filename,
           content: att.content,

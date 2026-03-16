@@ -809,6 +809,15 @@ export const sendSmtpMessage = asyncHandler(async (req, res) => {
       },
     });
 
+    // Inject tracking
+    const { injectTracking } = await import("../utils/tracking-injector.js");
+    const emailId = (await import("crypto")).randomUUID();
+    
+    const trackedHtml = injectTracking(html || body, emailId, {
+      trackOpens: true,
+      trackClicks: true,
+    });
+
     // Build mail options
     const mailOptions = {
       from: `"${sender.displayName}" <${sender.email}>`,
@@ -817,7 +826,7 @@ export const sendSmtpMessage = asyncHandler(async (req, res) => {
       bcc: bcc,
       subject: subject,
       text: body,
-      html: html,
+      html: trackedHtml,
     };
 
     // Add attachments if any
