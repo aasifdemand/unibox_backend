@@ -19,6 +19,8 @@ import { emitToUser } from "../utils/event-broadcaster.js";
 import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
 import { refreshGoogleToken } from "../utils/refresh-google-token.js";
 import { tryCompleteCampaign } from "../utils/campaign-completion.checker.js";
+import { getNextProxy } from "../utils/proxy-fetcher.js";
+import { createImapConnection } from "../utils/imap-helper.js";
 
 /* =========================
    LOGGER
@@ -378,24 +380,11 @@ async function ingestImapReplies(sender) {
     if (!messageIdMap.size) return;
 
     // 3️⃣ Connect to IMAP
-    const imap = new Imap({
-      user: sender.imapUsername,
-      password: sender.imapPassword,
-      host: sender.imapHost,
-      port: sender.imapPort || 993,
-      tls: true,
-      autotls: "always",
-      connTimeout: 10000,
-      authTimeout: 5000,
-      keepalive: {
-        interval: 10000,
-        idleInterval: 300000,
-        forceNoop: true,
-      },
-      tlsOptions: {
-        rejectUnauthorized: false,
-      },
-    });
+    const proxy = await getNextProxy();
+    if (proxy) log("INFO", "🌐 Using proxy for IMAP reply ingestion", { sender: sender.email, proxy });
+    
+    // Switch to helper for consistent proxy support
+    const imap = await createImapConnection(sender, proxy);
 
     return new Promise((resolve) => {
       imap.once("ready", () => {

@@ -16,8 +16,8 @@ import util from "util";
 import {
   createImapConnection,
   resolveFolder,
-  flattenBoxes
 } from "../utils/imap-helper.js";
+import { getNextProxy } from "../utils/proxy-fetcher.js";
 
 // Cache TTLs
 const CACHEerrTTL = {
@@ -159,7 +159,9 @@ async function fetchSmtpMessagesForFolder(req, res, folder) {
     }
 
     // --- Per-request connection (never share across folders) ---
-    const imap = await createImapConnection(sender);
+    const proxy = await getNextProxy();
+    if (proxy) console.log(`DEBUG: Using proxy for SMTP message fetch: ${proxy}`);
+    const imap = await createImapConnection(sender, proxy);
 
     try {
       // Resolve the provider-specific folder name
@@ -329,7 +331,8 @@ export const getSmtpFolders = asyncHandler(async (req, res) => {
       return res.json({ success: true, data: cached, fromCache: true });
     }
 
-    const imap = await createImapConnection(sender);
+    const proxy = await getNextProxy();
+    const imap = await createImapConnection(sender, proxy);
     try {
       const boxes = await util.promisify(imap.getBoxes).bind(imap)();
       const delimiter = imap.delimiter || "/";
@@ -428,7 +431,8 @@ export const getSmtpMessage = asyncHandler(async (req, res) => {
       return res.json({ success: true, data: cached, fromCache: true });
     }
 
-    const imap = await createImapConnection(sender);
+    const proxy = await getNextProxy();
+    const imap = await createImapConnection(sender, proxy);
     try {
       const resolvedFolder = await resolveFolder(imap, sender, folder);
       await openFolder(imap, resolvedFolder);
@@ -475,7 +479,8 @@ export const markSmtpAsRead = asyncHandler(async (req, res) => {
   if (!sender) throw new AppError("SMTP mailbox not found", 404);
 
   return withRateLimit(mailboxId, "smtp", async () => {
-    const imap = await createImapConnection(sender);
+    const proxy = await getNextProxy();
+    const imap = await createImapConnection(sender, proxy);
     try {
       const resolvedFolder = await resolveFolder(imap, sender, folder);
       await openFolder(imap, resolvedFolder);
@@ -514,7 +519,8 @@ export const markSmtpAsUnread = asyncHandler(async (req, res) => {
   if (!sender) throw new AppError("SMTP mailbox not found", 404);
 
   return withRateLimit(mailboxId, "smtp", async () => {
-    const imap = await createImapConnection(sender);
+    const proxy = await getNextProxy();
+    const imap = await createImapConnection(sender, proxy);
     try {
       const resolvedFolder = await resolveFolder(imap, sender, folder);
       await openFolder(imap, resolvedFolder);
@@ -553,7 +559,8 @@ export const deleteSmtpMessage = asyncHandler(async (req, res) => {
   if (!sender) throw new AppError("SMTP mailbox not found", 404);
 
   return withRateLimit(mailboxId, "smtp", async () => {
-    const imap = await createImapConnection(sender);
+    const proxy = await getNextProxy();
+    const imap = await createImapConnection(sender, proxy);
     try {
       const resolvedFolder = await resolveFolder(imap, sender, folder);
       await openFolder(imap, resolvedFolder);
@@ -587,7 +594,8 @@ export const moveSmtpMessage = asyncHandler(async (req, res) => {
   if (!sender) throw new AppError("SMTP mailbox not found", 404);
 
   return withRateLimit(mailboxId, "smtp", async () => {
-    const imap = await createImapConnection(sender);
+    const proxy = await getNextProxy();
+    const imap = await createImapConnection(sender, proxy);
     try {
       const resolvedSource = await resolveFolder(imap, sender, sourceFolder);
       const resolvedTarget = await resolveFolder(imap, sender, targetFolder);
@@ -625,7 +633,8 @@ export const syncSmtpMailbox = asyncHandler(async (req, res) => {
   if (!sender) throw new AppError("SMTP mailbox not found", 404);
 
   return withRateLimit(mailboxId, "smtp", async () => {
-    const imap = await createImapConnection(sender);
+    const proxy = await getNextProxy();
+    const imap = await createImapConnection(sender, proxy);
     let box;
     try {
       const resolvedFolder = await resolveFolder(imap, sender, folder);
@@ -684,7 +693,8 @@ export const getSmtpStatus = asyncHandler(async (req, res) => {
       return res.json({ success: true, data: cached, fromCache: true });
     }
 
-    const imap = await createImapConnection(sender);
+    const proxy = await getNextProxy();
+    const imap = await createImapConnection(sender, proxy);
     try {
       const friendlyFolders = ["INBOX", "SENT", "DRAFTS", "TRASH", "SPAM"];
       const statusPromises = friendlyFolders.map(async (folderName) => {

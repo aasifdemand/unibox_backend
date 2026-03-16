@@ -361,7 +361,9 @@ async function startWorker() {
 
               let imapForAppend;
               try {
-                imapForAppend = await createImapConnection(sender);
+                const proxy = await getNextProxy();
+                if (proxy) log("DEBUG", "🌐 Using proxy for IMAP Sent folder append", { senderId: sender.id, proxy });
+                imapForAppend = await createImapConnection(sender, proxy);
                 const resolvedSent = await resolveFolder(
                   imapForAppend,
                   sender,

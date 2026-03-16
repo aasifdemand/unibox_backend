@@ -13,6 +13,7 @@ import { testOutlookConnection } from "../utils/outlook-tester.js";
 import { verifySmtp, verifyImap } from "../services/smtp-imap.service.js";
 import { senderHealthService } from "../services/sender-health.service.js";
 import pLimit from "p-limit";
+import { getNextProxy } from "../utils/proxy-fetcher.js";
 
 export const createSender = asyncHandler(async (req, res) => {
   const {
@@ -65,6 +66,10 @@ export const createSender = asyncHandler(async (req, res) => {
     throw new AppError("Sender with this email already exists", 409);
   }
 
+  // Fetch proxy for verification
+  const proxy = await getNextProxy();
+  if (proxy) console.log(`DEBUG: Using proxy ${proxy} for SMTP/IMAP verification`);
+
   // Verify SMTP
   await verifySmtp({
     host: smtpHost,
@@ -72,6 +77,7 @@ export const createSender = asyncHandler(async (req, res) => {
     secure: smtpSecure,
     user: smtpUser,
     password: smtpPassword,
+    proxy,
   });
 
   // Verify IMAP
@@ -81,6 +87,7 @@ export const createSender = asyncHandler(async (req, res) => {
     secure: imapSecure,
     user: imapUser,
     password: imapPassword,
+    proxy,
   });
 
   const sender = await SmtpSender.create({
@@ -267,6 +274,9 @@ export const bulkUploadSenders = asyncHandler(async (req, res) => {
       const verificationPromises = finalBatch.map((sender) => 
         limit(async () => {
           try {
+            const proxy = await getNextProxy();
+            if (proxy) console.log(`DEBUG: Using proxy ${proxy} for bulk SMTP/IMAP verification of ${sender.email}`);
+
             // Test SMTP
             await verifySmtp({
               host: sender.smtpHost,
@@ -274,6 +284,7 @@ export const bulkUploadSenders = asyncHandler(async (req, res) => {
               secure: sender.smtpSecure,
               user: sender.smtpUsername,
               password: sender.smtpPassword,
+              proxy,
             });
 
             // Test IMAP
@@ -283,6 +294,7 @@ export const bulkUploadSenders = asyncHandler(async (req, res) => {
               secure: sender.imapSecure,
               user: sender.imapUsername,
               password: sender.imapPassword,
+              proxy,
             });
 
             sender.isVerified = true;

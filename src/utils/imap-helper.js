@@ -1,14 +1,15 @@
-import Imap from "imap";
-import util from "util";
-import AppError from "./app-error.js";
+import { HttpsProxyAgent } from "https-proxy-agent";
+import net from "net";
+import tls from "tls";
 
 /**
  * Creates and connects a new IMAP client
  * @param {Object} sender - The sender model instance
+ * @param {string|null} proxy - Optional proxy URL
  * @returns {Promise<Imap>} - A connected IMAP instance
  */
-export function createImapConnection(sender) {
-    const imap = new Imap({
+export function createImapConnection(sender, proxy = null) {
+    const imapConfig = {
         user: sender.email,
         password: sender.imapPassword,
         host: sender.imapHost,
@@ -17,11 +18,11 @@ export function createImapConnection(sender) {
         tlsOptions: { rejectUnauthorized: false },
         authTimeout: 15000,
         connTimeout: 15000,
-    });
+    };
 
     return new Promise((resolve, reject) => {
-        imap.once("ready", () => resolve(imap));
-        imap.once("error", (err) => {
+        const handleReady = (imap) => resolve(imap);
+        const handleError = (err) => {
             const isAuthError =
                 err.message.toLowerCase().includes("authentication failed") ||
                 err.message.toLowerCase().includes("invalid credentials");
@@ -31,8 +32,46 @@ export function createImapConnection(sender) {
                     isAuthError ? 401 : 500,
                 ),
             );
-        });
-        imap.connect();
+        };
+
+        if (proxy) {
+            const agent = new HttpsProxyAgent(proxy);
+            const secure = sender.imapSecure;
+            const host = sender.imapHost;
+            const port = sender.imapPort;
+
+            agent.callback(
+                { protocol: secure ? "https:" : "http:", host, port },
+                { rejectUnauthorized: false },
+                (err, socket) => {
+                    if (err) return reject(new AppError(`IMAP Proxy connection failed: ${err.message}`, 500));
+
+                    let connectionSocket = socket;
+                    if (secure) {
+                        connectionSocket = tls.connect({
+                            socket: socket,
+                            host,
+                            port,
+                            rejectUnauthorized: false
+                        });
+                    }
+
+                    const imap = new Imap({
+                        ...imapConfig,
+                        socket: connectionSocket,
+                    });
+
+                    imap.once("ready", () => handleReady(imap));
+                    imap.once("error", handleError);
+                    imap.connect();
+                }
+            );
+        } else {
+            const imap = new Imap(imapConfig);
+            imap.once("ready", () => handleReady(imap));
+            imap.once("error", handleError);
+            imap.connect();
+        }
     });
 }
 
